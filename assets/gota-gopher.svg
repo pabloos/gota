@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 240" width="200" height="240">
+  <!-- droplet-shaped body -->
+  <path d="M100,12
+           C60,72 22,120 22,160
+           C22,198 57,228 100,228
+           C143,228 178,198 178,160
+           C178,120 140,72 100,12
+           Z"
+        fill="#00ADD8"/>
+
+  <!-- glossy highlight -->
+  <ellipse cx="66" cy="62" rx="12" ry="22" fill="#FFFFFF" opacity="0.22"
+            transform="rotate(-18 66 62)"/>
+
+  <!-- ears -->
+  <ellipse cx="60" cy="92" rx="17" ry="21" fill="#00ADD8" stroke="#008BB0" stroke-width="2"
+            transform="rotate(-25 60 92)"/>
+  <ellipse cx="140" cy="92" rx="17" ry="21" fill="#00ADD8" stroke="#008BB0" stroke-width="2"
+            transform="rotate(25 140 92)"/>
+  <ellipse cx="60" cy="94" rx="8" ry="11" fill="#EAF8FC" transform="rotate(-25 60 94)"/>
+  <ellipse cx="140" cy="94" rx="8" ry="11" fill="#EAF8FC" transform="rotate(25 140 94)"/>
+
+  <!-- eyes -->
+  <ellipse cx="76" cy="148" rx="19" ry="23" fill="#FFFFFF"/>
+  <ellipse cx="124" cy="148" rx="19" ry="23" fill="#FFFFFF"/>
+  <circle cx="80" cy="153" r="9" fill="#1A1A1A"/>
+  <circle cx="120" cy="153" r="9" fill="#1A1A1A"/>
+  <circle cx="83" cy="149" r="2.5" fill="#FFFFFF"/>
+  <circle cx="123" cy="149" r="2.5" fill="#FFFFFF"/>
+
+  <!-- nose -->
+  <ellipse cx="100" cy="178" rx="7" ry="5.5" fill="#1A1A1A"/>
+
+  <!-- buck teeth -->
+  <rect x="89" y="185" width="9" height="16" rx="2.5" fill="#FFFFFF" stroke="#D8D8D8" stroke-width="1"/>
+  <rect x="102" y="185" width="9" height="16" rx="2.5" fill="#FFFFFF" stroke="#D8D8D8" stroke-width="1"/>
+</svg>

@@ -1,0 +1,20 @@
+# Build artifacts
+/gota
+/bin/
+*.exe
+*.test
+*.out
+
+# Test/coverage artifacts
+coverage.out
+*.prof
+
+# gota's own CLI output when run from the repo root during manual testing
+/openapi.yaml
+/openapi.json
+
+# OS cruft
+.DS_Store
+
+# Editor
+.vscode/
