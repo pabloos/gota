@@ -72,7 +72,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 				return true
 			}
 			method, path := splitPattern(pattern)
-			handlerName, decl, ok := resolveHandler(pkg, call.Args[1], funcDecls)
+			handlerName, decl, declFile, ok := resolveHandler(pkg, call.Args[1], funcDecls)
 			if !ok {
 				return true
 			}
@@ -81,6 +81,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 				Path:        path,
 				HandlerName: handlerName,
 				HandlerDecl: decl,
+				File:        declFile,
 				Pos:         pkg.Fset.Position(call.Pos()),
 			})
 			return true
@@ -92,12 +93,20 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 	return routes, nil
 }
 
+// resolvedDecl pairs a function/method declaration with the file that
+// contains it, since callers need both (the file to build an
+// ast.CommentMap over, for instance).
+type resolvedDecl struct {
+	Decl *ast.FuncDecl
+	File *ast.File
+}
+
 // indexFuncDecls maps every function and method declared in pkg to its
 // *types.Object, so handlers can be resolved back to their doc comments
 // whether they're referenced as a bare function (GetUser), a method value
 // on a receiver (srv.GetUser), or an http.HandlerFunc conversion of either.
-func indexFuncDecls(pkg *packages.Package) map[types.Object]*ast.FuncDecl {
-	decls := make(map[types.Object]*ast.FuncDecl)
+func indexFuncDecls(pkg *packages.Package) map[types.Object]resolvedDecl {
+	decls := make(map[types.Object]resolvedDecl)
 	if pkg.TypesInfo == nil {
 		return decls
 	}
@@ -108,7 +117,7 @@ func indexFuncDecls(pkg *packages.Package) map[types.Object]*ast.FuncDecl {
 				continue
 			}
 			if obj := pkg.TypesInfo.Defs[fn.Name]; obj != nil {
-				decls[obj] = fn
+				decls[obj] = resolvedDecl{Decl: fn, File: file}
 			}
 		}
 	}
@@ -179,18 +188,19 @@ func isHTTPMethod(s string) bool { return httpMethods[s] }
 // (HandleFunc(pattern, GetUser)), a method value on a receiver
 // (HandleFunc(pattern, srv.GetUser)), a qualified identifier from another
 // package (HandleFunc(pattern, handlers.GetUser)), or an http.HandlerFunc
-// conversion of any of those. The declaration is resolved via go/types
-// object identity rather than name matching, so it works for methods too;
-// it comes back nil when the object lives outside pkg (e.g. a handler
-// defined in a different package), since cross-package resolution isn't
-// supported yet.
-func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]*ast.FuncDecl) (name string, decl *ast.FuncDecl, ok bool) {
+// conversion of any of those. The declaration (and its file) is resolved
+// via go/types object identity rather than name matching, so it works for
+// methods too; both come back nil when the object lives outside pkg (e.g.
+// a handler defined in a different package), since cross-package
+// resolution isn't supported yet.
+func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]resolvedDecl) (name string, decl *ast.FuncDecl, file *ast.File, ok bool) {
 	switch expr := e.(type) {
 	case *ast.Ident:
-		return expr.Name, decls[pkg.TypesInfo.Uses[expr]], true
+		rd := decls[pkg.TypesInfo.Uses[expr]]
+		return expr.Name, rd.Decl, rd.File, true
 	case *ast.CallExpr:
 		if len(expr.Args) != 1 {
-			return "", nil, false
+			return "", nil, nil, false
 		}
 		return resolveHandler(pkg, expr.Args[0], decls)
 	case *ast.SelectorExpr:
@@ -200,7 +210,8 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]*a
 		} else {
 			obj = pkg.TypesInfo.Uses[expr.Sel] // qualified identifier, e.g. handlers.GetUser
 		}
-		return expr.Sel.Name, decls[obj], true
+		rd := decls[obj]
+		return expr.Sel.Name, rd.Decl, rd.File, true
 	}
-	return "", nil, false
+	return "", nil, nil, false
 }

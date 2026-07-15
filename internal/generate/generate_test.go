@@ -35,8 +35,14 @@ func TestRun_NetHTTPBasic(t *testing.T) {
 	if doc.Info.Title != "Test API" || doc.Info.Version != "1.0.0" {
 		t.Errorf("Info = %+v", doc.Info)
 	}
+	// DebugInfo (GET /debug/info) declares "x-gota-skip: true" and must be
+	// excluded entirely — not just empty, absent — so the path count stays
+	// at 2 even though main.go registers a third route.
 	if len(doc.Paths) != 2 {
-		t.Fatalf("expected 2 paths, got %d: %+v", len(doc.Paths), doc.Paths)
+		t.Fatalf("expected 2 paths (DebugInfo's x-gota-skip route should be excluded), got %d: %+v", len(doc.Paths), doc.Paths)
+	}
+	if _, ok := doc.Paths["/debug/info"]; ok {
+		t.Errorf("doc.Paths contains /debug/info, want it excluded by x-gota-skip")
 	}
 
 	// GET /users/{id}: fully annotated via a "gota:" comment. The comment's
@@ -187,6 +193,13 @@ func assertListUsers(t *testing.T, op *model.Operation) {
 	}
 	if errResp.Content != nil {
 		t.Errorf("500 Content = %+v, want nil (http.Error carries no JSON schema)", errResp.Content)
+	}
+
+	// ListUsers also has a debug branch marked "x-gota-skip: true" over
+	// its http.Error(..., http.StatusTeapot) call — that response must
+	// not appear at all, while 200 and 500 above are unaffected.
+	if _, has418 := op.Responses["418"]; has418 {
+		t.Errorf("Responses = %+v, the 418 debug branch is marked x-gota-skip and should not appear", op.Responses)
 	}
 }
 

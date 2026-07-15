@@ -114,6 +114,12 @@ type Operation struct {
 	RequestBody *RequestBody        `yaml:"requestBody,omitempty" json:"requestBody,omitempty"`
 	Responses   map[string]Response `yaml:"responses,omitempty" json:"responses,omitempty"`
 	Deprecated  bool                `yaml:"deprecated,omitempty" json:"deprecated,omitempty"`
+
+	// Skip is gota's own build-time directive, declared as "x-gota-skip"
+	// — a real OpenAPI Specification Extension field, not an invented
+	// DSL keyword — to exclude this operation from the emitted document
+	// entirely. It is consumed by the generator and never itself emitted.
+	Skip bool `yaml:"x-gota-skip,omitempty" json:"-"`
 }
 
 type Parameter struct {

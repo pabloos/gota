@@ -94,6 +94,9 @@ func TestExtract(t *testing.T) {
 	if getUser.HandlerDecl == nil {
 		t.Errorf("HandlerDecl is nil, want resolved FuncDecl")
 	}
+	if getUser.File == nil {
+		t.Errorf("File is nil, want the file containing GetUser's declaration")
+	}
 
 	createUser, ok := got[http.MethodPost+" /users"]
 	if !ok {
@@ -165,5 +168,8 @@ func TestExtract_MethodValueHandler(t *testing.T) {
 	}
 	if r.HandlerDecl.Doc == nil {
 		t.Errorf("resolved decl has no doc comment, want the \"gota:\" block above (s *Server) GetItem")
+	}
+	if r.File == nil {
+		t.Errorf("File is nil, want the file containing (s *Server) GetItem")
 	}
 }

@@ -42,6 +42,9 @@ func Merge(inferred, declared *model.Operation) *model.Operation {
 	if declared.Deprecated {
 		out.Deprecated = declared.Deprecated
 	}
+	if declared.Skip {
+		out.Skip = declared.Skip
+	}
 
 	return &out
 }

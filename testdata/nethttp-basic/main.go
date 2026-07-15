@@ -15,6 +15,7 @@ func main() {
 	mux.HandleFunc("GET /users", ListUsers)
 	mux.HandleFunc("POST /users", CreateUser)
 	mux.HandleFunc("DELETE /users/{id}", DeleteUser)
+	mux.HandleFunc("GET /debug/info", DebugInfo)
 
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }

@@ -18,6 +18,7 @@ type Route struct {
 	Path        string
 	HandlerName string
 	HandlerDecl *ast.FuncDecl // nil if the handler declaration could not be resolved (e.g. it lives in another package)
+	File        *ast.File     // the file containing HandlerDecl; nil whenever HandlerDecl is nil
 	Pos         token.Position
 }
 

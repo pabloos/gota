@@ -39,9 +39,17 @@ func GetUser(w http.ResponseWriter, r *http.Request) {
 
 // ListUsers returns every registered user. It has no "gota:" comment: gota
 // infers its method and path from the route registration in main.go, and
-// both of its responses — 200 and 500 — from the encoding/json and
-// http.Error calls in its own body.
+// its responses — 200 and 500 — from the encoding/json and http.Error
+// calls in its own body. The debug branch below is marked "x-gota-skip"
+// because it's an unpolished, undocumented escape hatch, not a real API
+// response — that one response is excluded while 200 and 500 still show up.
 func ListUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Debug") == "1" {
+		// gota:
+		//   x-gota-skip: true
+		http.Error(w, "debug mode not supported yet", http.StatusTeapot)
+		return
+	}
 	users, err := fetchUsers()
 	if err != nil {
 		http.Error(w, "failed to list users", http.StatusInternalServerError)
@@ -86,4 +94,11 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 // parameter from the route pattern and falls back to a default response.
 func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// gota:
+//
+//	x-gota-skip: true
+func DebugInfo(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]string{"status": "debug"})
 }

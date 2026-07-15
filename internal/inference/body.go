@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/pabloos/gota/internal/extractor"
 	"github.com/pabloos/gota/pkg/model"
 )
 
@@ -42,7 +43,14 @@ import (
 // effect is left unchanged) rather than guessed. Detecting nothing is
 // silent, not an error: a "gota:" comment remains the reliable, explicit
 // path, and always wins over whatever this infers.
-func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info) {
+//
+// cmap, if non-nil, lets a specific statement opt out of response
+// detection entirely via a "gota:" comment declaring "x-gota-skip: true"
+// placed directly above it — e.g. an immature error path the developer
+// doesn't want documented yet, without affecting the rest of the
+// handler's detected responses. This only applies to response detection
+// (Encode/Marshal/http.Error), not request body detection.
+func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap) {
 	if op == nil || decl == nil || decl.Body == nil || info == nil {
 		return
 	}
@@ -55,7 +63,7 @@ func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info) {
 	}
 
 	rc := &responseCollector{responses: map[string]model.Response{}}
-	rc.walk(decl.Body.List, http.StatusOK, info)
+	rc.walk(decl.Body.List, http.StatusOK, info, cmap)
 	if len(rc.responses) > 0 {
 		if op.Responses == nil {
 			op.Responses = map[string]model.Response{}
@@ -77,15 +85,21 @@ type responseCollector struct {
 // (if/else branch, for/switch body) passes a copy of code as that block's
 // starting point; changes made inside never propagate back to the caller,
 // which is what keeps sibling branches from contaminating each other.
-func (rc *responseCollector) walk(stmts []ast.Stmt, code int, info *types.Info) {
+func (rc *responseCollector) walk(stmts []ast.Stmt, code int, info *types.Info, cmap ast.CommentMap) {
 	for _, stmt := range stmts {
-		code = rc.walkStmt(stmt, code, info)
+		code = rc.walkStmt(stmt, code, info, cmap)
 	}
 }
 
 // walkStmt processes one statement and returns the status code in effect
-// for the *next sibling* statement in the same block.
-func (rc *responseCollector) walkStmt(stmt ast.Stmt, code int, info *types.Info) int {
+// for the *next sibling* statement in the same block. A statement with a
+// "gota:" comment declaring "x-gota-skip: true" attached to it (via cmap)
+// is invisible to detection entirely: it doesn't record a response and
+// doesn't update the code in effect.
+func (rc *responseCollector) walkStmt(stmt ast.Stmt, code int, info *types.Info, cmap ast.CommentMap) int {
+	if isSkipped(stmt, cmap) {
+		return code
+	}
 	switch s := stmt.(type) {
 	case *ast.ExprStmt:
 		if call, ok := s.X.(*ast.CallExpr); ok {
@@ -98,28 +112,46 @@ func (rc *responseCollector) walkStmt(stmt ast.Stmt, code int, info *types.Info)
 			}
 		}
 	case *ast.BlockStmt:
-		rc.walk(s.List, code, info)
+		rc.walk(s.List, code, info, cmap)
 	case *ast.IfStmt:
-		rc.walk(s.Body.List, code, info)
+		rc.walk(s.Body.List, code, info, cmap)
 		if s.Else != nil {
-			rc.walkStmt(s.Else, code, info)
+			rc.walkStmt(s.Else, code, info, cmap)
 		}
 	case *ast.ForStmt:
 		if s.Body != nil {
-			rc.walk(s.Body.List, code, info)
+			rc.walk(s.Body.List, code, info, cmap)
 		}
 	case *ast.RangeStmt:
 		if s.Body != nil {
-			rc.walk(s.Body.List, code, info)
+			rc.walk(s.Body.List, code, info, cmap)
 		}
 	case *ast.SwitchStmt:
 		for _, clause := range s.Body.List {
 			if cc, ok := clause.(*ast.CaseClause); ok {
-				rc.walk(cc.Body, code, info)
+				rc.walk(cc.Body, code, info, cmap)
 			}
 		}
 	}
 	return code
+}
+
+// isSkipped reports whether stmt has a "gota:" comment attached (via
+// cmap) declaring "x-gota-skip: true".
+func isSkipped(stmt ast.Stmt, cmap ast.CommentMap) bool {
+	if cmap == nil {
+		return false
+	}
+	for _, group := range cmap[stmt] {
+		op, found, err := extractor.Extract(group)
+		if err != nil || !found {
+			continue
+		}
+		if op.Skip {
+			return true
+		}
+	}
+	return false
 }
 
 // walkCall inspects a single call expression: WriteHeader updates the

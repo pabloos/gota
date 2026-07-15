@@ -5,6 +5,8 @@ package generate
 
 import (
 	"fmt"
+	"go/ast"
+	"go/token"
 	"go/types"
 	"sort"
 
@@ -33,6 +35,8 @@ func Run(opts Options) (*model.Document, error) {
 		return nil, err
 	}
 
+	cmaps := map[*ast.File]ast.CommentMap{}
+
 	var routeOps []emitter.RouteOperation
 	for _, pkg := range pkgs {
 		for _, plugin := range opts.Plugins {
@@ -41,9 +45,16 @@ func Run(opts Options) (*model.Document, error) {
 				return nil, fmt.Errorf("generate: plugin %s: %w", plugin.Name(), err)
 			}
 			for _, route := range routes {
-				op, err := buildOperation(route, pkg.TypesInfo)
+				var cmap ast.CommentMap
+				if route.File != nil {
+					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
+				}
+				op, err := buildOperation(route, pkg.TypesInfo, cmap)
 				if err != nil {
 					return nil, err
+				}
+				if op.Skip {
+					continue
 				}
 				routeOps = append(routeOps, emitter.RouteOperation{
 					Method:    route.Method,
@@ -76,11 +87,13 @@ func Run(opts Options) (*model.Document, error) {
 
 // buildOperation infers a baseline Operation for route (including a
 // best-effort request/response body detected from the handler's own
-// encoding/json calls), extracts any "gota:" comment on its handler, and
-// merges the two (comment wins).
-func buildOperation(route router.Route, info *types.Info) (*model.Operation, error) {
+// encoding/json calls, using cmap to honor any "x-gota-skip" comment
+// attached to a specific statement), extracts any "gota:" comment on the
+// handler itself, and merges the two (comment wins — including a
+// handler-level "x-gota-skip: true", which excludes the whole operation).
+func buildOperation(route router.Route, info *types.Info, cmap ast.CommentMap) (*model.Operation, error) {
 	inferred := inference.Operation(route)
-	inference.DetectBody(inferred, route.HandlerDecl, info)
+	inference.DetectBody(inferred, route.HandlerDecl, info, cmap)
 
 	if route.HandlerDecl == nil {
 		return inferred, nil
@@ -93,4 +106,17 @@ func buildOperation(route router.Route, info *types.Info) (*model.Operation, err
 		return inferred, nil
 	}
 	return merger.Merge(inferred, declared), nil
+}
+
+// commentMapFor returns the ast.CommentMap for file, building it (via the
+// stdlib go/ast, the same package used throughout gota's AST handling)
+// and caching it in cache on first use — multiple handlers commonly live
+// in the same file, and building a CommentMap walks the whole file.
+func commentMapFor(fset *token.FileSet, file *ast.File, cache map[*ast.File]ast.CommentMap) ast.CommentMap {
+	if cmap, ok := cache[file]; ok {
+		return cmap
+	}
+	cmap := ast.NewCommentMap(fset, file, file.Comments)
+	cache[file] = cmap
+	return cmap
 }
