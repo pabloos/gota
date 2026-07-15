@@ -1,7 +1,6 @@
 package inference
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,15 +11,13 @@ import (
 	"github.com/pabloos/gota/pkg/model"
 )
 
-// loadFixture writes src as a standalone module in a temp dir and loads it
-// with the same parser.Load path the real pipeline uses.
-func loadFixture(t *testing.T, src string) []*packages.Package {
+// loadFixture loads the fixture package checked in at
+// internal/inference/testdata/<name>, with the same parser.Load path the
+// real pipeline uses.
+func loadFixture(t *testing.T, name string) []*packages.Package {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.22.5\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+	dir, err := filepath.Abs(filepath.Join("testdata", name))
+	if err != nil {
 		t.Fatal(err)
 	}
 	pkgs, err := parser.Load(dir)
@@ -53,15 +50,7 @@ func docWithRef(name string) *model.Document {
 }
 
 func TestResolveSchemaRefs_PrimitivesAndOmitempty(t *testing.T) {
-	src := "package fixture\n\n" +
-		"type User struct {\n" +
-		"\tID      int    `json:\"id\"`\n" +
-		"\tName    string `json:\"name\"`\n" +
-		"\tBio     string `json:\"bio,omitempty\"`\n" +
-		"\tskip    string\n" +
-		"\tIgnored string `json:\"-\"`\n" +
-		"}\n"
-	pkgs := loadFixture(t, src)
+	pkgs := loadFixture(t, "schema_primitives")
 
 	doc := docWithRef("User")
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
@@ -95,15 +84,7 @@ func TestResolveSchemaRefs_PrimitivesAndOmitempty(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_NestedStructBecomesLinkedComponent(t *testing.T) {
-	src := "package fixture\n\n" +
-		"type Address struct {\n" +
-		"\tCity string `json:\"city\"`\n" +
-		"}\n\n" +
-		"type User struct {\n" +
-		"\tName    string  `json:\"name\"`\n" +
-		"\tAddress Address `json:\"address\"`\n" +
-		"}\n"
-	pkgs := loadFixture(t, src)
+	pkgs := loadFixture(t, "schema_nested")
 
 	doc := docWithRef("User")
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
@@ -129,15 +110,7 @@ func TestResolveSchemaRefs_NestedStructBecomesLinkedComponent(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_Slices(t *testing.T) {
-	src := "package fixture\n\n" +
-		"type Tag struct {\n" +
-		"\tName string `json:\"name\"`\n" +
-		"}\n\n" +
-		"type User struct {\n" +
-		"\tTags  []Tag    `json:\"tags\"`\n" +
-		"\tRoles []string `json:\"roles\"`\n" +
-		"}\n"
-	pkgs := loadFixture(t, src)
+	pkgs := loadFixture(t, "schema_slices")
 
 	doc := docWithRef("User")
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
@@ -159,12 +132,7 @@ func TestResolveSchemaRefs_Slices(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_TimeTimeField(t *testing.T) {
-	src := "package fixture\n\n" +
-		"import \"time\"\n\n" +
-		"type User struct {\n" +
-		"\tCreatedAt time.Time `json:\"created_at\"`\n" +
-		"}\n"
-	pkgs := loadFixture(t, src)
+	pkgs := loadFixture(t, "schema_time")
 
 	doc := docWithRef("User")
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
@@ -178,15 +146,7 @@ func TestResolveSchemaRefs_TimeTimeField(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_EmbeddedStructPromotesFields(t *testing.T) {
-	src := "package fixture\n\n" +
-		"type Base struct {\n" +
-		"\tID int `json:\"id\"`\n" +
-		"}\n\n" +
-		"type User struct {\n" +
-		"\tBase\n" +
-		"\tName string `json:\"name\"`\n" +
-		"}\n"
-	pkgs := loadFixture(t, src)
+	pkgs := loadFixture(t, "schema_embedded")
 
 	doc := docWithRef("User")
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
@@ -206,14 +166,7 @@ func TestResolveSchemaRefs_EmbeddedStructPromotesFields(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_HandlesCycles(t *testing.T) {
-	src := "package fixture\n\n" +
-		"type A struct {\n" +
-		"\tB *B `json:\"b,omitempty\"`\n" +
-		"}\n\n" +
-		"type B struct {\n" +
-		"\tA *A `json:\"a,omitempty\"`\n" +
-		"}\n"
-	pkgs := loadFixture(t, src)
+	pkgs := loadFixture(t, "schema_cycles")
 
 	doc := docWithRef("A")
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
@@ -237,7 +190,7 @@ func TestResolveSchemaRefs_HandlesCycles(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_UnknownTypeErrors(t *testing.T) {
-	pkgs := loadFixture(t, "package fixture\n")
+	pkgs := loadFixture(t, "schema_empty")
 
 	doc := docWithRef("DoesNotExist")
 	err := ResolveSchemaRefs(doc, pkgs)
@@ -250,7 +203,7 @@ func TestResolveSchemaRefs_UnknownTypeErrors(t *testing.T) {
 }
 
 func TestResolveSchemaRefs_NoRefsIsANoop(t *testing.T) {
-	pkgs := loadFixture(t, "package fixture\n")
+	pkgs := loadFixture(t, "schema_empty")
 
 	doc := &model.Document{Paths: model.Paths{"/x": &model.PathItem{Get: &model.Operation{}}}}
 	if err := ResolveSchemaRefs(doc, pkgs); err != nil {

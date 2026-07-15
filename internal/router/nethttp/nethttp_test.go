@@ -2,57 +2,34 @@ package nethttp_test
 
 import (
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/pabloos/gota/internal/parser"
 	"github.com/pabloos/gota/internal/router"
 	"github.com/pabloos/gota/internal/router/nethttp"
 )
 
-const fixtureSrc = `package fixture
-
-import "net/http"
-
-func Handlers() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /users/{id}", GetUser)
-	mux.HandleFunc("/legacy", LegacyHandler)
-	mux.Handle("POST /users", http.HandlerFunc(CreateUser))
-	http.HandleFunc("/health", HealthCheck)
-	mux.HandleFunc("example.com/hosted", HostedHandler)
-
-	notARoute := map[string]string{"HandleFunc": "not a call"}
-	_ = notARoute
-	return mux
-}
-
-// gota:
-//   summary: Get a user by ID
-func GetUser(w http.ResponseWriter, r *http.Request) {}
-
-func LegacyHandler(w http.ResponseWriter, r *http.Request) {}
-
-func CreateUser(w http.ResponseWriter, r *http.Request) {}
-
-func HealthCheck(w http.ResponseWriter, r *http.Request) {}
-
-func HostedHandler(w http.ResponseWriter, r *http.Request) {}
-`
-
-func TestExtract(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.22.5\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(fixtureSrc), 0o644); err != nil {
+// loadFixture loads the fixture package checked in at
+// internal/router/nethttp/testdata/<name>, with the same parser.Load path
+// the real pipeline uses.
+func loadFixture(t *testing.T, name string) []*packages.Package {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("testdata", name))
+	if err != nil {
 		t.Fatal(err)
 	}
 	pkgs, err := parser.Load(dir)
 	if err != nil {
 		t.Fatalf("parser.Load: %v", err)
 	}
+	return pkgs
+}
+
+func TestExtract(t *testing.T) {
+	pkgs := loadFixture(t, "routes")
 	if len(pkgs) != 1 {
 		t.Fatalf("expected 1 package, got %d", len(pkgs))
 	}
@@ -113,38 +90,12 @@ func TestName(t *testing.T) {
 	}
 }
 
-// methodHandlerFixtureSrc exercises the common dependency-injection pattern
-// where handlers are methods on a server struct, bound as method values
-// (srv.GetItem) rather than referenced as bare package-level functions.
-const methodHandlerFixtureSrc = `package fixture
-
-import "net/http"
-
-type Server struct{}
-
-func Handlers(srv *Server) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /items/{id}", srv.GetItem)
-	return mux
-}
-
-// gota:
-//   summary: Get an item by ID
-func (s *Server) GetItem(w http.ResponseWriter, r *http.Request) {}
-`
-
+// TestExtract_MethodValueHandler exercises the common dependency-injection
+// pattern where handlers are methods on a server struct, bound as method
+// values (srv.GetItem) rather than referenced as bare package-level
+// functions. Fixture: testdata/routes_method_value.
 func TestExtract_MethodValueHandler(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.22.5\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(methodHandlerFixtureSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pkgs, err := parser.Load(dir)
-	if err != nil {
-		t.Fatalf("parser.Load: %v", err)
-	}
+	pkgs := loadFixture(t, "routes_method_value")
 
 	routes, err := nethttp.New().Extract(pkgs[0])
 	if err != nil {

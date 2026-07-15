@@ -10,113 +10,6 @@ import (
 	"github.com/pabloos/gota/pkg/model"
 )
 
-const bodyFixtureSrc = "package fixture\n\n" +
-	"import (\n" +
-	"\t\"encoding/json\"\n" +
-	"\t\"net/http\"\n" +
-	")\n\n" +
-	"type User struct {\n" +
-	"\tID   int    `json:\"id\"`\n" +
-	"\tName string `json:\"name\"`\n" +
-	"}\n\n" +
-	"type ErrorResponse struct {\n" +
-	"\tMessage string `json:\"message\"`\n" +
-	"}\n\n" +
-	"func DecodeDirect(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tvar u User\n" +
-	"\tjson.NewDecoder(r.Body).Decode(&u)\n" +
-	"}\n\n" +
-	"func DecodeViaVariable(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tvar u User\n" +
-	"\tdec := json.NewDecoder(r.Body)\n" +
-	"\tdec.Decode(&u)\n" +
-	"}\n\n" +
-	"func UnmarshalCall(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tvar u User\n" +
-	"\tdata := []byte(\"{}\")\n" +
-	"\tjson.Unmarshal(data, &u)\n" +
-	"}\n\n" +
-	"func EncodeSingle(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tu := User{}\n" +
-	"\tjson.NewEncoder(w).Encode(u)\n" +
-	"}\n\n" +
-	"func EncodeErrorThenSuccess(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tif r.Method != \"GET\" {\n" +
-	"\t\tjson.NewEncoder(w).Encode(ErrorResponse{Message: \"bad\"})\n" +
-	"\t\treturn\n" +
-	"\t}\n" +
-	"\tu := User{}\n" +
-	"\tjson.NewEncoder(w).Encode(u)\n" +
-	"}\n\n" +
-	"func MarshalCall(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tu := User{}\n" +
-	"\tb, _ := json.Marshal(u)\n" +
-	"\tw.Write(b)\n" +
-	"}\n\n" +
-	"func EncodeSlice(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tusers := []User{}\n" +
-	"\tjson.NewEncoder(w).Encode(users)\n" +
-	"}\n\n" +
-	"func NoPattern(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tw.WriteHeader(204)\n" +
-	"}\n\n" +
-	"func DecodeNonStruct(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tvar s string\n" +
-	"\tjson.NewDecoder(r.Body).Decode(&s)\n" +
-	"}\n\n" +
-	"func EncodeWithExplicitCode(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tu := User{}\n" +
-	"\tw.WriteHeader(http.StatusCreated)\n" +
-	"\tjson.NewEncoder(w).Encode(u)\n" +
-	"}\n\n" +
-	"func TwoBranchesDifferentCodes(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tif r.Method != \"POST\" {\n" +
-	"\t\tw.WriteHeader(http.StatusNotFound)\n" +
-	"\t\tjson.NewEncoder(w).Encode(ErrorResponse{Message: \"not found\"})\n" +
-	"\t\treturn\n" +
-	"\t}\n" +
-	"\tw.WriteHeader(http.StatusCreated)\n" +
-	"\tjson.NewEncoder(w).Encode(User{})\n" +
-	"}\n\n" +
-	"func SiblingBranchNoLeak(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tif r.Method == \"DELETE\" {\n" +
-	"\t\tw.WriteHeader(http.StatusNotFound)\n" +
-	"\t\treturn\n" +
-	"\t}\n" +
-	"\tjson.NewEncoder(w).Encode(User{})\n" +
-	"}\n\n" +
-	"func HTTPErrorCall(w http.ResponseWriter, r *http.Request) {\n" +
-	"\thttp.Error(w, \"not found\", http.StatusNotFound)\n" +
-	"}\n\n" +
-	"func MixedErrorAndSuccess(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tif r.Method != \"GET\" {\n" +
-	"\t\thttp.Error(w, \"bad method\", http.StatusMethodNotAllowed)\n" +
-	"\t\treturn\n" +
-	"\t}\n" +
-	"\tjson.NewEncoder(w).Encode(User{})\n" +
-	"}\n\n" +
-	"func computeCode() int { return 200 }\n\n" +
-	"func WriteHeaderDynamicCode(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tcode := computeCode()\n" +
-	"\tw.WriteHeader(code)\n" +
-	"\tjson.NewEncoder(w).Encode(User{})\n" +
-	"}\n\n" +
-	"func SkippedErrorBranch(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tif r.Header.Get(\"X-Debug\") == \"1\" {\n" +
-	"\t\t// gota:\n" +
-	"\t\t//   x-gota-skip: true\n" +
-	"\t\thttp.Error(w, \"debug mode not supported yet\", http.StatusTeapot)\n" +
-	"\t\treturn\n" +
-	"\t}\n" +
-	"\tjson.NewEncoder(w).Encode(User{})\n" +
-	"}\n\n" +
-	"func SkippedEncodeWithCode(w http.ResponseWriter, r *http.Request) {\n" +
-	"\tw.WriteHeader(http.StatusCreated)\n" +
-	"\t// gota:\n" +
-	"\t//   x-gota-skip: true\n" +
-	"\tjson.NewEncoder(w).Encode(User{})\n" +
-	"}\n"
-
 // findFunc locates the *ast.FuncDecl named name across pkgs, returning it
 // alongside the TypesInfo of the package that declared it.
 func findFunc(t *testing.T, pkgs []*packages.Package, name string) (*ast.FuncDecl, *types.Info) {
@@ -152,7 +45,7 @@ func commentMapFor(t *testing.T, pkgs []*packages.Package, funcName string) ast.
 }
 
 func TestDetectBody(t *testing.T) {
-	pkgs := loadFixture(t, bodyFixtureSrc)
+	pkgs := loadFixture(t, "body")
 
 	t.Run("Decode via the json.NewDecoder(...).Decode(&x) chain", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "DecodeDirect")
