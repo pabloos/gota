@@ -56,6 +56,46 @@ func TestRun_NetHTTPBasic(t *testing.T) {
 	}
 	assertListUsers(t, users.Get)
 	assertCreateUser(t, users.Post)
+
+	assertUserComponent(t, doc)
+}
+
+// assertUserComponent checks that the $ref declared in GetUser/CreateUser's
+// "gota:" comments resolved to a real components.schemas.User entry
+// generated from the testdata/nethttp-basic User struct — not just parsed
+// as an opaque string.
+func assertUserComponent(t *testing.T, doc *model.Document) {
+	t.Helper()
+	if doc.Components == nil {
+		t.Fatal("Components is nil, want a resolved User schema")
+	}
+	user, ok := doc.Components.Schemas["User"]
+	if !ok {
+		t.Fatalf("Components.Schemas = %+v, missing User", doc.Components.Schemas)
+	}
+	if user.Type != "object" {
+		t.Errorf("User.Type = %q, want object", user.Type)
+	}
+	for _, name := range []string{"id", "name", "email", "bio"} {
+		if _, ok := user.Properties[name]; !ok {
+			t.Errorf("User.Properties = %+v, missing %q", user.Properties, name)
+		}
+	}
+	if !containsStr(user.Required, "id") || !containsStr(user.Required, "name") || !containsStr(user.Required, "email") {
+		t.Errorf("User.Required = %+v, want id/name/email (no omitempty)", user.Required)
+	}
+	if containsStr(user.Required, "bio") {
+		t.Errorf("User.Required = %+v, bio has omitempty and should not be required", user.Required)
+	}
+}
+
+func containsStr(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertGetUser(t *testing.T, op *model.Operation) {
@@ -79,8 +119,12 @@ func assertGetUser(t *testing.T, op *model.Operation) {
 	if p.Schema == nil || p.Schema.Type != "integer" {
 		t.Errorf("declared comment schema (integer) did not win over inferred default (string): %+v", p.Schema)
 	}
-	if _, ok := op.Responses["200"]; !ok {
-		t.Errorf("missing 200 response: %+v", op.Responses)
+	resp200, ok := op.Responses["200"]
+	if !ok {
+		t.Fatalf("missing 200 response: %+v", op.Responses)
+	}
+	if schema := resp200.Content["application/json"].Schema; schema == nil || schema.Ref != "#/components/schemas/User" {
+		t.Errorf("200 response schema = %+v, want a bare $ref to User", schema)
 	}
 	if _, ok := op.Responses["404"]; !ok {
 		t.Errorf("missing declared 404 response: %+v", op.Responses)
@@ -146,8 +190,12 @@ func assertCreateUser(t *testing.T, op *model.Operation) {
 	if _, ok := op.Responses["200"]; ok {
 		t.Errorf("inferred default 200 response should have been replaced by the declared 201")
 	}
-	if _, ok := op.Responses["201"]; !ok {
-		t.Errorf("missing declared 201 response: %+v", op.Responses)
+	resp201, ok := op.Responses["201"]
+	if !ok {
+		t.Fatalf("missing declared 201 response: %+v", op.Responses)
+	}
+	if schema := resp201.Content["application/json"].Schema; schema == nil || schema.Ref != "#/components/schemas/User" {
+		t.Errorf("201 response schema = %+v, want a bare $ref to the same User component", schema)
 	}
 }
 

@@ -11,6 +11,7 @@ type User struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+	Bio   string `json:"bio,omitempty"`
 }
 
 // gota:
@@ -28,14 +29,7 @@ type User struct {
 //	    content:
 //	      application/json:
 //	        schema:
-//	          type: object
-//	          properties:
-//	            id:
-//	              type: integer
-//	            name:
-//	              type: string
-//	            email:
-//	              type: string
+//	          $ref: '#/components/schemas/User'
 //	  '404':
 //	    description: User not found
 func GetUser(w http.ResponseWriter, r *http.Request) {
@@ -70,14 +64,7 @@ func ListUsers(w http.ResponseWriter, r *http.Request) {
 //	    content:
 //	      application/json:
 //	        schema:
-//	          type: object
-//	          properties:
-//	            id:
-//	              type: integer
-//	            name:
-//	              type: string
-//	            email:
-//	              type: string
+//	          $ref: '#/components/schemas/User'
 func CreateUser(w http.ResponseWriter, r *http.Request) {
 	var u User
 	json.NewDecoder(r.Body).Decode(&u)

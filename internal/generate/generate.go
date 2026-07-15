@@ -61,7 +61,16 @@ func Run(opts Options) (*model.Document, error) {
 	})
 
 	info := model.Info{Title: opts.Title, Version: opts.Version}
-	return emitter.Build(info, routeOps)
+	doc, err := emitter.Build(info, routeOps)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := inference.ResolveSchemaRefs(doc, pkgs); err != nil {
+		return nil, err
+	}
+
+	return doc, nil
 }
 
 // buildOperation infers a baseline Operation for route, extracts any

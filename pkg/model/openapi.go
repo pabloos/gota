@@ -65,6 +65,19 @@ func (pi *PathItem) Set(method string, op *Operation) bool {
 	return true
 }
 
+// Operations returns every non-nil Operation held by pi, in the
+// conventional get/post/put/patch/delete/head/options/trace order.
+func (pi *PathItem) Operations() []*Operation {
+	all := []*Operation{pi.Get, pi.Post, pi.Put, pi.Patch, pi.Delete, pi.Head, pi.Options, pi.Trace}
+	ops := make([]*Operation, 0, len(all))
+	for _, op := range all {
+		if op != nil {
+			ops = append(ops, op)
+		}
+	}
+	return ops
+}
+
 // ForMethod returns the operation registered for method, or nil.
 func (pi *PathItem) ForMethod(method string) *Operation {
 	switch method {
