@@ -5,6 +5,7 @@ package generate
 
 import (
 	"fmt"
+	"go/types"
 	"sort"
 
 	"github.com/pabloos/gota/internal/emitter"
@@ -40,7 +41,7 @@ func Run(opts Options) (*model.Document, error) {
 				return nil, fmt.Errorf("generate: plugin %s: %w", plugin.Name(), err)
 			}
 			for _, route := range routes {
-				op, err := buildOperation(route)
+				op, err := buildOperation(route, pkg.TypesInfo)
 				if err != nil {
 					return nil, err
 				}
@@ -73,10 +74,13 @@ func Run(opts Options) (*model.Document, error) {
 	return doc, nil
 }
 
-// buildOperation infers a baseline Operation for route, extracts any
-// "gota:" comment on its handler, and merges the two (comment wins).
-func buildOperation(route router.Route) (*model.Operation, error) {
+// buildOperation infers a baseline Operation for route (including a
+// best-effort request/response body detected from the handler's own
+// encoding/json calls), extracts any "gota:" comment on its handler, and
+// merges the two (comment wins).
+func buildOperation(route router.Route, info *types.Info) (*model.Operation, error) {
 	inferred := inference.Operation(route)
+	inference.DetectBody(inferred, route.HandlerDecl, info)
 
 	if route.HandlerDecl == nil {
 		return inferred, nil

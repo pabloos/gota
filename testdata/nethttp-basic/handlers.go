@@ -38,10 +38,20 @@ func GetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListUsers returns every registered user. It has no "gota:" comment: gota
-// infers its method, path and a default 200 response purely from the route
-// registration in main.go.
+// infers its method and path from the route registration in main.go, and
+// both of its responses — 200 and 500 — from the encoding/json and
+// http.Error calls in its own body.
 func ListUsers(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode([]User{})
+	users, err := fetchUsers()
+	if err != nil {
+		http.Error(w, "failed to list users", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(users)
+}
+
+func fetchUsers() ([]User, error) {
+	return []User{}, nil
 }
 
 // gota:

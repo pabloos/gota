@@ -162,8 +162,31 @@ func assertListUsers(t *testing.T, op *model.Operation) {
 	if len(op.Parameters) != 0 {
 		t.Errorf("expected no parameters, got %+v", op.Parameters)
 	}
-	if resp, ok := op.Responses["200"]; !ok || resp.Description != "OK" {
-		t.Errorf("inferred default response missing/wrong: %+v", op.Responses)
+	resp, ok := op.Responses["200"]
+	if !ok || resp.Description != "OK" {
+		t.Fatalf("inferred default response missing/wrong: %+v", op.Responses)
+	}
+	// ListUsers has no "gota:" comment at all: its response schema comes
+	// purely from DetectBody noticing "json.NewEncoder(w).Encode([]User{})"
+	// in the handler body — this is the "pure inference" case actually
+	// inferring something real, not just the generic 200 default.
+	schema := resp.Content["application/json"].Schema
+	if schema == nil || schema.Type != "array" || schema.Items == nil || schema.Items.Ref != "#/components/schemas/User" {
+		t.Errorf("response schema = %+v, want an array with items $ref to User (detected from the handler body)", schema)
+	}
+
+	// ListUsers also has an error branch — http.Error(w, ..., http.StatusInternalServerError)
+	// — which DetectBody must register as its own 500 response, distinct
+	// from and without leaking into the 200 success path above.
+	errResp, ok := op.Responses["500"]
+	if !ok {
+		t.Fatalf("Responses = %+v, missing the 500 detected from the http.Error branch", op.Responses)
+	}
+	if errResp.Description != "Internal Server Error" {
+		t.Errorf("500 Description = %q, want %q", errResp.Description, "Internal Server Error")
+	}
+	if errResp.Content != nil {
+		t.Errorf("500 Content = %+v, want nil (http.Error carries no JSON schema)", errResp.Content)
 	}
 }
 
