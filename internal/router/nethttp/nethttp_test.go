@@ -12,6 +12,14 @@ import (
 	"github.com/pabloos/gota/internal/router/nethttp"
 )
 
+// allMethodsForTest mirrors nethttp's unexported allMethods: the 8 HTTP
+// methods a method-less ServeMux pattern expands into. CONNECT is
+// deliberately excluded — see allMethods' doc comment in nethttp.go.
+var allMethodsForTest = []string{
+	http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+	http.MethodDelete, http.MethodHead, http.MethodOptions, http.MethodTrace,
+}
+
 // loadFixture loads the fixture package checked in at
 // internal/router/nethttp/testdata/<name>, with the same parser.Load path
 // the real pipeline uses.
@@ -45,17 +53,20 @@ func TestExtract(t *testing.T) {
 		got[r.Method+" "+r.Path] = r
 	}
 
-	want := []string{
+	// /users/{id} and /users declare an explicit method, so they produce
+	// exactly one route each. /legacy, /health and /hosted have no method
+	// in their pattern, which net/http's ServeMux docs say "matches every
+	// method" — each expands into 8 routes (TestExtract_NoMethodPatternMatchesAllMethods
+	// checks that expansion in detail; here just the totals and the
+	// explicit-method routes matter).
+	wantTotal := 2 + 3*len(allMethodsForTest)
+	if len(got) != wantTotal {
+		t.Fatalf("got %d routes, want %d: %+v", len(got), wantTotal, got)
+	}
+	for _, key := range []string{
 		http.MethodGet + " /users/{id}",
-		http.MethodGet + " /legacy", // no method in pattern -> defaults to GET
 		http.MethodPost + " /users",
-		http.MethodGet + " /health", // http.HandleFunc (package-level call)
-		http.MethodGet + " /hosted", // host-prefixed pattern, host stripped
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d routes, want %d: %+v", len(got), len(want), got)
-	}
-	for _, key := range want {
+	} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("missing route %q, got: %+v", key, got)
 		}
@@ -81,6 +92,43 @@ func TestExtract(t *testing.T) {
 	}
 	if createUser.HandlerName != "CreateUser" {
 		t.Errorf("HandlerName = %q, want CreateUser", createUser.HandlerName)
+	}
+}
+
+// TestExtract_NoMethodPatternMatchesAllMethods pins down net/http's own
+// documented ServeMux behavior: "a pattern with no method matches every
+// method." http.HandleFunc("/health", HealthCheck) in the fixture must
+// expand into exactly the 8 methods gota's model supports, all bound to
+// HealthCheck — not narrowed to GET.
+func TestExtract_NoMethodPatternMatchesAllMethods(t *testing.T) {
+	pkgs := loadFixture(t, "routes")
+
+	routes, err := nethttp.New().Extract(pkgs[0])
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	gotMethods := map[string]bool{}
+	for _, r := range routes {
+		if r.Path != "/health" {
+			continue
+		}
+		if r.HandlerName != "HealthCheck" {
+			t.Errorf("route %+v: HandlerName = %q, want HealthCheck", r, r.HandlerName)
+		}
+		gotMethods[r.Method] = true
+	}
+
+	if len(gotMethods) != len(allMethodsForTest) {
+		t.Fatalf("got %d methods for /health, want %d: %v", len(gotMethods), len(allMethodsForTest), gotMethods)
+	}
+	for _, m := range allMethodsForTest {
+		if !gotMethods[m] {
+			t.Errorf("missing method %s for /health", m)
+		}
+	}
+	if gotMethods[http.MethodConnect] {
+		t.Errorf("CONNECT should never be generated: OpenAPI's Path Item Object has no slot for it")
 	}
 }
 

@@ -5,8 +5,12 @@
 //	mux.Handle("POST /users", http.HandlerFunc(CreateUser))
 //	http.HandleFunc("/health", HealthCheck)
 //
-// Patterns follow Go 1.22's enhanced ServeMux syntax ("METHOD /path"); a
-// pattern with no method applies to any method. Path parameters use the
+// Patterns follow Go 1.22's enhanced ServeMux syntax ("METHOD /path"). Per
+// net/http's own ServeMux docs, "a pattern with no method matches every
+// method" — so a registration like http.HandleFunc("/health", HealthCheck)
+// expands into one Route per HTTP method gota's model supports (GET, POST,
+// PUT, PATCH, DELETE, HEAD, OPTIONS, TRACE), all bound to the same
+// handler, rather than being narrowed to GET. Path parameters use the
 // same "{name}" syntax as OpenAPI path templates, so no translation is
 // needed between the two.
 package nethttp
@@ -71,19 +75,21 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 			if !ok {
 				return true
 			}
-			method, path := splitPattern(pattern)
+			methods, path := splitPattern(pattern)
 			handlerName, decl, declFile, ok := resolveHandler(pkg, call.Args[1], funcDecls)
 			if !ok {
 				return true
 			}
-			routes = append(routes, router.Route{
-				Method:      method,
-				Path:        path,
-				HandlerName: handlerName,
-				HandlerDecl: decl,
-				File:        declFile,
-				Pos:         pkg.Fset.Position(call.Pos()),
-			})
+			for _, method := range methods {
+				routes = append(routes, router.Route{
+					Method:      method,
+					Path:        path,
+					HandlerName: handlerName,
+					HandlerDecl: decl,
+					File:        declFile,
+					Pos:         pkg.Fset.Position(call.Pos()),
+				})
+			}
 			return true
 		})
 		if walkErr != nil {
@@ -157,16 +163,32 @@ func stringLiteral(e ast.Expr) (string, bool) {
 
 // splitPattern splits a Go 1.22+ ServeMux pattern ("METHOD /path" or
 // "/path") into method (uppercased, "GET" if unspecified) and path.
-func splitPattern(pattern string) (method, path string) {
+// allMethods is what a ServeMux pattern with no method expands to — per
+// net/http's ServeMux docs, "a pattern with no method matches every
+// method." CONNECT is deliberately excluded: it's not one of the eight
+// methods model.PathItem has a slot for (OpenAPI's Path Item Object has
+// no "connect" field at all), so including it here would make every
+// method-less pattern fail with emitter.Build's "no OpenAPI operation
+// slot" error instead of gota's own model quietly reflecting the same gap.
+var allMethods = []string{
+	http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+	http.MethodDelete, http.MethodHead, http.MethodOptions, http.MethodTrace,
+}
+
+// splitPattern splits a Go 1.22+ ServeMux pattern ("METHOD /path" or
+// "/path") into the set of HTTP methods it matches and the path. A
+// pattern with an explicit method matches only that one; a pattern with
+// no method matches every method in allMethods.
+func splitPattern(pattern string) (methods []string, path string) {
 	pattern = strings.TrimSpace(pattern)
 	// Strip an optional host prefix ("example.com/path" or "METHOD example.com/path").
 	if fields := strings.SplitN(pattern, " ", 2); len(fields) == 2 {
 		m := strings.ToUpper(strings.TrimSpace(fields[0]))
 		if isHTTPMethod(m) {
-			return m, stripHost(strings.TrimSpace(fields[1]))
+			return []string{m}, stripHost(strings.TrimSpace(fields[1]))
 		}
 	}
-	return http.MethodGet, stripHost(pattern)
+	return allMethods, stripHost(pattern)
 }
 
 func stripHost(pathPart string) string {
