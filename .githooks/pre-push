@@ -1,0 +1,24 @@
+#!/bin/sh
+# Slower, every-push gate mirroring CI, so failures show up here instead
+# of in the Actions run. Enable with `git config core.hooksPath .githooks`
+# (see README).
+set -eu
+
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+	echo "gofmt: the following files are not formatted:" >&2
+	echo "$unformatted" >&2
+	echo "run: gofmt -w ." >&2
+	exit 1
+fi
+
+go vet ./...
+go vet ./testdata/nethttp-basic
+
+go build -o /dev/null ./...
+go build -o /dev/null ./testdata/nethttp-basic
+
+# No -race here (unlike CI): it forces cgo, which hits linker bugs on some
+# local toolchains unrelated to the code. CI's ubuntu-latest runner is
+# unaffected and remains the authoritative race-detecting run.
+go test ./...

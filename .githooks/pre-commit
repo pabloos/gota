@@ -1,0 +1,12 @@
+#!/bin/sh
+# Fast, every-commit gate: formatting only. Enable with
+# `git config core.hooksPath .githooks` (see README).
+set -eu
+
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+	echo "gofmt: the following files are not formatted:" >&2
+	echo "$unformatted" >&2
+	echo "run: gofmt -w ." >&2
+	exit 1
+fi

@@ -30,4 +30,11 @@ jobs:
           go build -o /dev/null ./testdata/nethttp-basic
 
       - name: go test
-        run: go test ./... -race -v
+        run: go test ./... -race -v -coverpkg=./... -coverprofile=coverage.out
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          fail_ci_if_error: false
