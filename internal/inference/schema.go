@@ -23,9 +23,10 @@ const schemaRefPrefix = "#/components/schemas/"
 // Go becomes a $ref graph in the spec.
 //
 // It returns an error if a comment references a schema name with no
-// matching Go type anywhere in pkgs. It does not resolve ambiguous names
-// declared in more than one package (first match wins) and does not
-// attempt any inference for operations that never declare a $ref.
+// matching Go type anywhere in pkgs, or if that name is declared in more
+// than one analyzed package (gota has no syntax to disambiguate which one
+// was meant, so it refuses to guess). It does not attempt any inference
+// for operations that never declare a $ref.
 func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package) error {
 	names := map[string]bool{}
 	for _, item := range doc.Paths {
@@ -118,8 +119,11 @@ func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 	if _, ok := r.schemas[name]; ok {
 		return nil
 	}
-	named, ok := lookupType(name, pkgs)
-	if !ok {
+	named, found, err := lookupType(name, pkgs)
+	if err != nil {
+		return err
+	}
+	if !found {
 		return fmt.Errorf("gota: comment references schema %q but no Go type named %q was found in the analyzed packages", name, name)
 	}
 	r.register(named)
@@ -305,9 +309,12 @@ func isTimeTime(named *types.Named) bool {
 	return pkg != nil && pkg.Path() == "time" && obj.Name() == "Time"
 }
 
-// lookupType searches pkgs (in order) for a top-level type named name,
-// returning the first match.
-func lookupType(name string, pkgs []*packages.Package) (*types.Named, bool) {
+// lookupType searches every package in pkgs for a top-level type named
+// name. err is non-nil only when name is declared in more than one
+// package — found is false (with no error) when it's declared in none.
+func lookupType(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+	var matches []*types.Named
+	var pkgPaths []string
 	for _, pkg := range pkgs {
 		if pkg.Types == nil {
 			continue
@@ -320,11 +327,22 @@ func lookupType(name string, pkgs []*packages.Package) (*types.Named, bool) {
 		if !ok {
 			continue
 		}
-		named, ok := tn.Type().(*types.Named)
+		n, ok := tn.Type().(*types.Named)
 		if !ok {
 			continue
 		}
-		return named, true
+		matches = append(matches, n)
+		pkgPaths = append(pkgPaths, pkg.PkgPath)
 	}
-	return nil, false
+	switch len(matches) {
+	case 0:
+		return nil, false, nil
+	case 1:
+		return matches[0], true, nil
+	default:
+		return nil, false, fmt.Errorf(
+			"gota: schema name %q is ambiguous: a type named %q is declared in more than one analyzed package (%s) — rename one of them so the $ref is unambiguous",
+			name, name, strings.Join(pkgPaths, ", "),
+		)
+	}
 }

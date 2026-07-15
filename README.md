@@ -90,11 +90,14 @@ detected response (e.g. an unpolished error path) without affecting the
 rest of the handler's inferred responses — this only applies to response
 detection, not request body detection.
 
-What's still explicitly out of scope: generics (`Response[T]`),
-disambiguating a schema name declared in more than one package (first
-match wins, silently), and resolving a `gota:` comment on a handler that's
-itself referenced from a different package than where it's registered
-(e.g. `mux.HandleFunc("/x", handlers.GetUser)`) — that's a separate,
+A schema name declared in more than one analyzed package is a hard error,
+not a silent "first match wins" — gota has no `$ref` syntax to say which
+one was meant, so it refuses to guess.
+
+What's still explicitly out of scope: generics (`Response[T]`), and
+resolving a `gota:` comment on a handler that's itself referenced from a
+different package than where it's registered (e.g.
+`mux.HandleFunc("/x", handlers.GetUser)`) — that's a separate,
 still-unresolved limitation in route extraction, not in schema resolution.
 
 Other router plugins — Chi, Gin — are not implemented yet.

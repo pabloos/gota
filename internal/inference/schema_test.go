@@ -202,6 +202,30 @@ func TestResolveSchemaRefs_UnknownTypeErrors(t *testing.T) {
 	}
 }
 
+// TestResolveSchemaRefs_AmbiguousNameErrors pins down that a schema name
+// declared in more than one analyzed package is a hard error, not a
+// silent "first match wins" — gota has no $ref syntax to say which one
+// was meant, so guessing would risk generating the wrong schema instead
+// of failing loudly.
+func TestResolveSchemaRefs_AmbiguousNameErrors(t *testing.T) {
+	pkgs := loadFixture(t, "schema_ambiguous")
+	if len(pkgs) != 2 {
+		t.Fatalf("fixture setup: got %d packages, want 2 (a and b, each declaring User)", len(pkgs))
+	}
+
+	doc := docWithRef("User")
+	err := ResolveSchemaRefs(doc, pkgs)
+	if err == nil {
+		t.Fatal("expected an error for a $ref matching a type declared in two packages")
+	}
+	if !strings.Contains(err.Error(), "User") || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error %q should mention the ambiguous name", err.Error())
+	}
+	if doc.Components != nil {
+		t.Errorf("Components = %+v, want nil — an ambiguous $ref must not partially resolve", doc.Components)
+	}
+}
+
 func TestResolveSchemaRefs_NoRefsIsANoop(t *testing.T) {
 	pkgs := loadFixture(t, "schema_empty")
 
