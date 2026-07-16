@@ -364,7 +364,7 @@ func shallowRefSchema(t types.Type) (*model.Schema, bool) {
 		if _, isStruct := tt.Underlying().(*types.Struct); !isStruct {
 			return nil, false
 		}
-		return &model.Schema{Ref: schemaRefPrefix + tt.Obj().Name()}, true
+		return &model.Schema{Ref: schemaRefPrefix + componentName(tt)}, true
 	case *types.Slice:
 		item, ok := shallowRefSchema(tt.Elem())
 		if !ok {

@@ -130,12 +130,32 @@ func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 	return nil
 }
 
+// componentName returns named's OpenAPI component name: its own declared
+// name, or — for a generic type instantiated with exactly one
+// named-struct type argument (Response[User]) — a synthesized
+// "<Generic>_<Arg>" name, so distinct instantiations of the same generic
+// don't collide on one component. Anything else (no instantiation, 2+
+// type parameters, or a non-named type argument) falls back to the bare
+// declared name.
+func componentName(named *types.Named) string {
+	base := named.Obj().Name()
+	targs := named.TypeArgs()
+	if targs == nil || targs.Len() != 1 {
+		return base
+	}
+	argNamed, ok := targs.At(0).(*types.Named)
+	if !ok {
+		return base
+	}
+	return base + "_" + argNamed.Obj().Name()
+}
+
 // register ensures named's schema is generated and stored under its own
 // name, recursively registering any named struct types its fields
 // reference, and returns a $ref schema pointing to it. It's safe to call
 // repeatedly (idempotent) and safe against reference cycles.
 func (r *registry) register(named *types.Named) *model.Schema {
-	name := named.Obj().Name()
+	name := componentName(named)
 	ref := &model.Schema{Ref: schemaRefPrefix + name}
 
 	if _, done := r.schemas[name]; done {
@@ -309,10 +329,24 @@ func isTimeTime(named *types.Named) bool {
 	return pkg != nil && pkg.Path() == "time" && obj.Name() == "Time"
 }
 
-// lookupType searches every package in pkgs for a top-level type named
-// name. err is non-nil only when name is declared in more than one
-// package — found is false (with no error) when it's declared in none.
+// lookupType resolves a $ref name to a Go type: name itself first
+// (lookupTypeByName), and — only on a miss — as a possible
+// componentName-convention generic instantiation ("<Generic>_<Arg>", see
+// lookupInstantiatedType). Trying the direct lookup first means an
+// actual Go type that just happens to have an underscore in its name is
+// never shadowed by the generics convention.
 func lookupType(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+	named, found, err = lookupTypeByName(name, pkgs)
+	if found || err != nil {
+		return named, found, err
+	}
+	return lookupInstantiatedType(name, pkgs)
+}
+
+// lookupTypeByName searches every package in pkgs for a top-level type
+// named name. err is non-nil only when name is declared in more than one
+// package — found is false (with no error) when it's declared in none.
+func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
 	var matches []*types.Named
 	var pkgPaths []string
 	for _, pkg := range pkgs {
@@ -345,4 +379,48 @@ func lookupType(name string, pkgs []*packages.Package) (named *types.Named, foun
 			name, name, strings.Join(pkgPaths, ", "),
 		)
 	}
+}
+
+// lookupInstantiatedType parses name as "<Generic>_<Arg>"
+// (componentName's convention for a single-type-parameter generic
+// instantiation, e.g. "Response_User" for Response[User]) and, if
+// Generic really is a single-type-parameter generic type and Arg a real
+// type, returns the properly instantiated (fields substituted)
+// *types.Named — the same object schemaForType/register would build
+// from a live Response[User] expression. found is false, with no error,
+// whenever name doesn't fit this shape — most names, including any type
+// that just happens to contain an underscore — so callers fall through
+// to their normal "not found" handling, not treat this as authoritative.
+func lookupInstantiatedType(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+	idx := strings.IndexByte(name, '_')
+	if idx <= 0 || idx == len(name)-1 {
+		return nil, false, nil
+	}
+	baseName, argName := name[:idx], name[idx+1:]
+
+	base, found, err := lookupTypeByName(baseName, pkgs)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found || base.TypeParams() == nil || base.TypeParams().Len() != 1 {
+		return nil, false, nil
+	}
+
+	arg, found, err := lookupTypeByName(argName, pkgs)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	inst, err := types.Instantiate(nil, base, []types.Type{arg}, true)
+	if err != nil {
+		return nil, false, fmt.Errorf("gota: instantiating generic type %q with %q: %w", baseName, argName, err)
+	}
+	instNamed, ok := inst.(*types.Named)
+	if !ok {
+		return nil, false, nil
+	}
+	return instNamed, true, nil
 }

@@ -88,8 +88,6 @@ README's [Status](README.md#status) section, not secret TODOs:
   `Route.HandlerObj` the way `internal/router/nethttp` does, and
   `internal/generate` traces it via `internal/astutil` regardless of
   which plugin found it.
-- **Generics support** (`Response[T]`-shaped handlers) — currently
-  explicitly out of scope for schema inference.
 
 Opening an issue to discuss approach before a large PR is welcome but not
 required for small, well-contained changes.

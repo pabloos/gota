@@ -313,3 +313,49 @@ func TestRun_CrossPackageHandler(t *testing.T) {
 		t.Errorf("ListUsers 200 response schema = %+v, want an inferred array schema", schema)
 	}
 }
+
+// TestRun_GenericResponses is the end-to-end regression test for the bug
+// this feature fixes: two handlers encoding different instantiations of
+// the same generic Response[T] type (fixture: testdata/nethttp-generics)
+// used to collide on a single "Response" component with an untyped data
+// field. Both must now get their own distinct, correctly-typed component.
+func TestRun_GenericResponses(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/nethttp-generics")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Plugins: []router.Plugin{nethttp.New()},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+
+	userRef := doc.Paths["/users/{id}"].Get.Responses["200"].Content["application/json"].Schema
+	productRef := doc.Paths["/products/{id}"].Get.Responses["200"].Content["application/json"].Schema
+	if userRef == nil || userRef.Ref != "#/components/schemas/Response_User" {
+		t.Fatalf("GetUser response schema = %+v, want $ref to Response_User", userRef)
+	}
+	if productRef == nil || productRef.Ref != "#/components/schemas/Response_Product" {
+		t.Fatalf("GetProduct response schema = %+v, want $ref to Response_Product", productRef)
+	}
+
+	respUser, ok := doc.Components.Schemas["Response_User"]
+	if !ok {
+		t.Fatalf("Response_User component not registered: %+v", doc.Components.Schemas)
+	}
+	respProduct, ok := doc.Components.Schemas["Response_Product"]
+	if !ok {
+		t.Fatalf("Response_Product component not registered: %+v", doc.Components.Schemas)
+	}
+	if respUser.Properties["data"].Ref != "#/components/schemas/User" {
+		t.Errorf("Response_User.data = %+v, want $ref to User", respUser.Properties["data"])
+	}
+	if respProduct.Properties["data"].Ref != "#/components/schemas/Product" {
+		t.Errorf("Response_Product.data = %+v, want $ref to Product", respProduct.Properties["data"])
+	}
+}

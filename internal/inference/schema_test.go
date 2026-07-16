@@ -49,6 +49,31 @@ func docWithRef(name string) *model.Document {
 	}
 }
 
+// docWithTwoRefs builds a minimal Document with two GET operations
+// ("/x" and "/y"), each with its own 200 response $ref — enough to check
+// that two distinct $refs resolve to two distinct, non-colliding
+// components.
+func docWithTwoRefs(name1, name2 string) *model.Document {
+	op := func(name string) *model.Operation {
+		return &model.Operation{
+			Responses: map[string]model.Response{
+				"200": {
+					Description: "ok",
+					Content: map[string]model.MediaType{
+						"application/json": {Schema: &model.Schema{Ref: schemaRefPrefix + name}},
+					},
+				},
+			},
+		}
+	}
+	return &model.Document{
+		Paths: model.Paths{
+			"/x": &model.PathItem{Get: op(name1)},
+			"/y": &model.PathItem{Get: op(name2)},
+		},
+	}
+}
+
 func TestResolveSchemaRefs_PrimitivesAndOmitempty(t *testing.T) {
 	pkgs := loadFixture(t, "schema_primitives")
 
@@ -235,6 +260,70 @@ func TestResolveSchemaRefs_NoRefsIsANoop(t *testing.T) {
 	}
 	if doc.Components != nil {
 		t.Errorf("Components = %+v, want nil when nothing references a schema", doc.Components)
+	}
+}
+
+// TestResolveSchemaRefs_GenericInstantiation pins down that a $ref using
+// componentName's "<Generic>_<Arg>" convention (the same one body.go's
+// bare inference produces, and that a hand-written "gota:" comment can
+// use directly) resolves to a correctly-substituted component — Data's
+// field type must be User, not the unresolved type parameter T.
+func TestResolveSchemaRefs_GenericInstantiation(t *testing.T) {
+	pkgs := loadFixture(t, "schema_generics")
+
+	doc := docWithRef("Response_User")
+	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+		t.Fatalf("ResolveSchemaRefs: %v", err)
+	}
+
+	resp, ok := doc.Components.Schemas["Response_User"]
+	if !ok {
+		t.Fatalf("Response_User component not registered: %+v", doc.Components)
+	}
+	data, ok := resp.Properties["data"]
+	if !ok {
+		t.Fatalf("Response_User.Properties = %+v, missing data", resp.Properties)
+	}
+	if data.Ref != schemaRefPrefix+"User" {
+		t.Errorf("data property = %+v, want a $ref to User (the substituted type, not the type parameter T)", data)
+	}
+	if _, ok := doc.Components.Schemas["User"]; !ok {
+		t.Errorf("User was not registered as its own linked component: %+v", doc.Components.Schemas)
+	}
+}
+
+// TestResolveSchemaRefs_GenericInstantiationsDontCollide is the direct
+// regression test for the bug this feature fixes: Response[User] and
+// Response[Product] used to collide on a single "Response" component
+// with an empty (untyped) data field. Both must now resolve to their
+// own distinct, correctly-typed component.
+func TestResolveSchemaRefs_GenericInstantiationsDontCollide(t *testing.T) {
+	pkgs := loadFixture(t, "schema_generics")
+
+	doc := docWithTwoRefs("Response_User", "Response_Product")
+	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+		t.Fatalf("ResolveSchemaRefs: %v", err)
+	}
+
+	respUser, ok := doc.Components.Schemas["Response_User"]
+	if !ok {
+		t.Fatalf("Response_User component not registered: %+v", doc.Components)
+	}
+	respProduct, ok := doc.Components.Schemas["Response_Product"]
+	if !ok {
+		t.Fatalf("Response_Product component not registered: %+v", doc.Components)
+	}
+	if respUser.Properties["data"].Ref != schemaRefPrefix+"User" {
+		t.Errorf("Response_User.data = %+v, want a $ref to User", respUser.Properties["data"])
+	}
+	if respProduct.Properties["data"].Ref != schemaRefPrefix+"Product" {
+		t.Errorf("Response_Product.data = %+v, want a $ref to Product", respProduct.Properties["data"])
+	}
+	if _, ok := doc.Components.Schemas["User"]; !ok {
+		t.Errorf("User was not registered as its own linked component")
+	}
+	if _, ok := doc.Components.Schemas["Product"]; !ok {
+		t.Errorf("Product was not registered as its own linked component")
 	}
 }
 

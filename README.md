@@ -106,7 +106,20 @@ unresolvable handler is — the route is still documented, just without a
 comment or inferred body — rather than gota reading source code outside
 the project it was pointed at.
 
-What's still explicitly out of scope: generics (`Response[T]`).
+A generic type instantiated with exactly one named-struct type argument
+— the common "response envelope" idiom, `Response[User]` — gets its own
+component per instantiation, named `<Generic>_<Arg>` (`Response_User`),
+instead of every instantiation colliding on one `Response` component
+with an untyped field. This is inferred automatically from the handler's
+own `Encode`/`Marshal` call, the same as any other best-effort body
+detection, and the same `<Generic>_<Arg>` name works in a hand-written
+`gota:` comment's `$ref` too — it's a real, resolvable name, not
+gota-internal syntax. Scoped deliberately to one type parameter
+instantiated with a named type: a basic-type argument (`Response[string]`),
+a 2+-type-parameter generic, or referencing the bare unparameterized
+generic name by itself (`$ref: '#/components/schemas/Response'`, with no
+instantiation specified) all fall back to today's behavior rather than
+being newly resolved.
 
 Other router plugins — Chi, Gin — are not implemented yet.
 
@@ -270,11 +283,12 @@ Core engine — everything router-agnostic:
 | `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), no block present, invalid YAML, prose preceding the block                     | `internal/extractor/extractor_test.go` |
 | Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set                                       | `internal/merger/merger_test.go` |
 | Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
+| Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
 | Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity | `internal/inference/body_test.go` |
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped                                                                            | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `nethttp-generics` fixture proving two generic instantiations resolve distinctly | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
 router's API (only `net/http` exists today; this table's shape is meant

@@ -18,6 +18,10 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
+type Response[T any] struct {
+	Data T `json:"data"`
+}
+
 func DecodeDirect(w http.ResponseWriter, r *http.Request) {
 	var u User
 	json.NewDecoder(r.Body).Decode(&u)
@@ -38,6 +42,13 @@ func UnmarshalCall(w http.ResponseWriter, r *http.Request) {
 func EncodeSingle(w http.ResponseWriter, r *http.Request) {
 	u := User{}
 	json.NewEncoder(w).Encode(u)
+}
+
+// EncodeGenericResponse must produce a $ref reflecting the instantiation
+// (Response_User), not the bare generic name (Response) — otherwise it
+// would collide with every other instantiation of Response[T].
+func EncodeGenericResponse(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(Response[User]{Data: User{ID: 1}})
 }
 
 func EncodeErrorThenSuccess(w http.ResponseWriter, r *http.Request) {

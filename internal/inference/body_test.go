@@ -96,6 +96,19 @@ func TestDetectBody(t *testing.T) {
 		}
 	})
 
+	t.Run("encoding a generic instantiation detects a $ref reflecting the instantiation", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "EncodeGenericResponse")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil)
+		resp, ok := op.Responses["200"]
+		if !ok {
+			t.Fatal("200 response not detected")
+		}
+		if schema := resp.Content["application/json"].Schema; schema.Ref != schemaRefPrefix+"Response_User" {
+			t.Errorf("response schema = %+v, want $ref to Response_User (the instantiation), not the bare generic name Response", schema)
+		}
+	})
+
 	t.Run("last of multiple Encode calls wins", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "EncodeErrorThenSuccess")
 		op := &model.Operation{}
