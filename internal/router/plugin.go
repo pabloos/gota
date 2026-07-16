@@ -7,6 +7,7 @@ package router
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -17,8 +18,9 @@ type Route struct {
 	Method      string
 	Path        string
 	HandlerName string
-	HandlerDecl *ast.FuncDecl // nil if the handler declaration could not be resolved (e.g. it lives in another package)
+	HandlerDecl *ast.FuncDecl // nil if Extract's own package didn't contain the declaration (e.g. a cross-package reference); internal/generate backfills this using HandlerObj when possible
 	File        *ast.File     // the file containing HandlerDecl; nil whenever HandlerDecl is nil
+	HandlerObj  types.Object  // the resolved go/types object for the handler, whenever expression-shape resolution succeeded at all — independent of whether HandlerDecl was also found; nil only if the plugin couldn't identify an object (e.g. an unrecognized expression shape)
 	Pos         token.Position
 }
 

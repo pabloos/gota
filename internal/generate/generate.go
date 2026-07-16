@@ -10,6 +10,7 @@ import (
 	"go/types"
 	"sort"
 
+	"github.com/pabloos/gota/internal/astutil"
 	"github.com/pabloos/gota/internal/emitter"
 	"github.com/pabloos/gota/internal/extractor"
 	"github.com/pabloos/gota/internal/inference"
@@ -37,6 +38,12 @@ func Run(opts Options) (*model.Document, error) {
 
 	cmaps := map[*ast.File]ast.CommentMap{}
 
+	// globalIndex resolves a handler declared in a different package than
+	// the one that registered it (e.g. mux.HandleFunc("/x", handlers.GetUser))
+	// — a single plugin.Extract call only ever sees its own package, so
+	// this covers every loaded package instead.
+	globalIndex := astutil.IndexFuncDecls(pkgs)
+
 	var routeOps []emitter.RouteOperation
 	for _, pkg := range pkgs {
 		for _, plugin := range opts.Plugins {
@@ -45,11 +52,19 @@ func Run(opts Options) (*model.Document, error) {
 				return nil, fmt.Errorf("generate: plugin %s: %w", plugin.Name(), err)
 			}
 			for _, route := range routes {
+				info := pkg.TypesInfo
+				if route.HandlerDecl == nil && route.HandlerObj != nil {
+					if fd, ok := globalIndex[route.HandlerObj]; ok {
+						route.HandlerDecl = fd.Decl
+						route.File = fd.File
+						info = fd.Info // the declaring package's Info, not the registering one
+					}
+				}
 				var cmap ast.CommentMap
 				if route.File != nil {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
-				op, err := buildOperation(route, pkg.TypesInfo, cmap)
+				op, err := buildOperation(route, info, cmap)
 				if err != nil {
 					return nil, err
 				}

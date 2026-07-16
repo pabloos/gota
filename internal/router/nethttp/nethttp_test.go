@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
+	"github.com/pabloos/gota/internal/astutil"
 	"github.com/pabloos/gota/internal/parser"
 	"github.com/pabloos/gota/internal/router"
 	"github.com/pabloos/gota/internal/router/nethttp"
@@ -170,5 +171,86 @@ func TestExtract_MethodValueHandler(t *testing.T) {
 	}
 	if r.File == nil {
 		t.Errorf("File is nil, want the file containing (s *Server) GetItem")
+	}
+}
+
+// TestExtract_CrossPackageHandler pins down what a single Extract call
+// can and can't do when a route's handler lives in a different package
+// than the one being analyzed: HandlerDecl/File stay nil (Extract only
+// ever sees one package), but HandlerObj must still resolve — that's
+// what lets internal/generate trace the declaration across every loaded
+// package afterward. Covers all three shapes resolveHandler recognizes:
+// a bare qualified identifier, an http.HandlerFunc conversion of one,
+// and a cross-package method value.
+func TestExtract_CrossPackageHandler(t *testing.T) {
+	pkgs := loadFixture(t, "routes_cross_package")
+	if len(pkgs) != 2 {
+		t.Fatalf("fixture setup: got %d packages, want 2 (main and handlers)", len(pkgs))
+	}
+
+	var mainPkg *packages.Package
+	for _, pkg := range pkgs {
+		if pkg.Name == "main" {
+			mainPkg = pkg
+		}
+	}
+	if mainPkg == nil {
+		t.Fatalf("fixture setup: no package named main among: %+v", pkgs)
+	}
+
+	routes, err := nethttp.New().Extract(mainPkg)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(routes) != 3 {
+		t.Fatalf("got %d routes, want 3: %+v", len(routes), routes)
+	}
+
+	// The global index (spanning both packages) is what internal/generate
+	// uses to trace HandlerObj back to its declaration; reusing it here
+	// proves the identity resolveHandler captured is actually traceable,
+	// not just non-nil.
+	globalIndex := astutil.IndexFuncDecls(pkgs)
+
+	wantHandlerName := map[string]string{
+		"/users/{id}": "GetUser",
+		"/users":      "CreateUser",
+		"/items/{id}": "GetItem",
+	}
+	for _, r := range routes {
+		if r.HandlerDecl != nil {
+			t.Errorf("route %s %s: HandlerDecl = %+v, want nil (Extract only sees the main package)", r.Method, r.Path, r.HandlerDecl)
+		}
+		if r.File != nil {
+			t.Errorf("route %s %s: File = %+v, want nil (Extract only sees the main package)", r.Method, r.Path, r.File)
+		}
+		if r.HandlerObj == nil {
+			t.Fatalf("route %s %s: HandlerObj is nil, want the resolved go/types object even though the decl lives elsewhere", r.Method, r.Path)
+		}
+
+		wantName, ok := wantHandlerName[r.Path]
+		if !ok {
+			t.Fatalf("unexpected route path %q", r.Path)
+		}
+		if r.HandlerName != wantName {
+			t.Errorf("route %s %s: HandlerName = %q, want %q", r.Method, r.Path, r.HandlerName, wantName)
+		}
+
+		fd, ok := globalIndex[r.HandlerObj]
+		if !ok {
+			t.Fatalf("route %s %s: HandlerObj not found in the global index built from the same pkgs — go/types identity isn't shared across packages as expected", r.Method, r.Path)
+		}
+		if fd.Decl.Name.Name != wantName {
+			t.Errorf("route %s %s: global index resolved to %q, want %q", r.Method, r.Path, fd.Decl.Name.Name, wantName)
+		}
+		if fd.File == nil || fd.Info == nil {
+			t.Errorf("route %s %s: resolved FuncDeclInfo = %+v, want non-nil File and Info", r.Method, r.Path, fd)
+		}
+
+		// GetItem specifically must resolve to a method (a receiver-bound
+		// FuncDecl), not some unrelated function that happens to share a name.
+		if r.Path == "/items/{id}" && fd.Decl.Recv == nil {
+			t.Errorf("GetItem's resolved decl has no receiver; resolved the wrong FuncDecl")
+		}
 	}
 }

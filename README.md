@@ -95,11 +95,18 @@ A schema name declared in more than one analyzed package is a hard error,
 not a silent "first match wins" — gota has no `$ref` syntax to say which
 one was meant, so it refuses to guess.
 
-What's still explicitly out of scope: generics (`Response[T]`), and
-resolving a `gota:` comment on a handler that's itself referenced from a
-different package than where it's registered (e.g.
-`mux.HandleFunc("/x", handlers.GetUser)`) — that's a separate,
-still-unresolved limitation in route extraction, not in schema resolution.
+A handler can be registered from a different package than the one that
+declares it (`mux.HandleFunc("/x", handlers.GetUser)`) — gota resolves
+the `gota:` comment and best-effort body inference across that boundary
+the same as if it were local, via a `go/types`-object index spanning
+every analyzed package. This only reaches packages within the module
+being analyzed (`--dir`), not external dependencies: a handler imported
+from a third-party module is left unresolved the same way any other
+unresolvable handler is — the route is still documented, just without a
+comment or inferred body — rather than gota reading source code outside
+the project it was pointed at.
+
+What's still explicitly out of scope: generics (`Response[T]`).
 
 Other router plugins — Chi, Gin — are not implemented yet.
 
@@ -279,9 +286,12 @@ to scale as Chi/Gin plugins get added):
 | Method-less pattern → expands to every HTTP method | ✅ |
 | Handler resolution: bare identifier            | ✅ |
 | Handler resolution: method value (bound method) | ✅ |
-| Handler resolution: cross-package reference    | ❌ not supported |
+| Handler resolution: cross-package reference    | ✅ |
 
-Tests: `internal/router/nethttp/nethttp_test.go`.
+Tests: `internal/router/nethttp/nethttp_test.go`. Cross-package
+resolution itself is plugin-agnostic (`internal/astutil`, exercised
+end-to-end in `internal/generate/generate_test.go`) — any future plugin
+gets it for free by populating `Route.HandlerObj` the same way.
 
 Optional local git hooks (`.githooks/`) mirror the CI checks so failures
 show up before you even push: `pre-commit` runs `gofmt` only (fast, every

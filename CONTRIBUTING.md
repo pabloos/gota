@@ -84,13 +84,12 @@ README's [Status](README.md#status) section, not secret TODOs:
   reference implementation of the `router.Plugin` interface
   (`internal/router/plugin.go`) — a new plugin needs the same route
   (method, path, handler) extraction for a different router's API.
+  Cross-package handler resolution comes for free: populate
+  `Route.HandlerObj` the way `internal/router/nethttp` does, and
+  `internal/generate` traces it via `internal/astutil` regardless of
+  which plugin found it.
 - **Generics support** (`Response[T]`-shaped handlers) — currently
   explicitly out of scope for schema inference.
-- **Cross-package handler resolution** — resolving a `gota:` comment on
-  a handler that's referenced from a different package than where it's
-  registered (e.g. `mux.HandleFunc("/x", handlers.GetUser)`). This is a
-  route-extraction limitation, distinct from schema `$ref` resolution
-  (which already searches every analyzed package).
 
 Opening an issue to discuss approach before a large PR is welcome but not
 required for small, well-contained changes.

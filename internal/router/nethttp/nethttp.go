@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
+	"github.com/pabloos/gota/internal/astutil"
 	"github.com/pabloos/gota/internal/router"
 )
 
@@ -48,7 +49,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 		return nil, fmt.Errorf("nethttp: package %s has no Fset", pkg.PkgPath)
 	}
 
-	funcDecls := indexFuncDecls(pkg)
+	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
 
 	var routes []router.Route
 	for _, file := range pkg.Syntax {
@@ -76,7 +77,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 				return true
 			}
 			methods, path := splitPattern(pattern)
-			handlerName, decl, declFile, ok := resolveHandler(pkg, call.Args[1], funcDecls)
+			handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, call.Args[1], funcDecls)
 			if !ok {
 				return true
 			}
@@ -87,6 +88,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 					HandlerName: handlerName,
 					HandlerDecl: decl,
 					File:        declFile,
+					HandlerObj:  handlerObj,
 					Pos:         pkg.Fset.Position(call.Pos()),
 				})
 			}
@@ -97,37 +99,6 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 		}
 	}
 	return routes, nil
-}
-
-// resolvedDecl pairs a function/method declaration with the file that
-// contains it, since callers need both (the file to build an
-// ast.CommentMap over, for instance).
-type resolvedDecl struct {
-	Decl *ast.FuncDecl
-	File *ast.File
-}
-
-// indexFuncDecls maps every function and method declared in pkg to its
-// *types.Object, so handlers can be resolved back to their doc comments
-// whether they're referenced as a bare function (GetUser), a method value
-// on a receiver (srv.GetUser), or an http.HandlerFunc conversion of either.
-func indexFuncDecls(pkg *packages.Package) map[types.Object]resolvedDecl {
-	decls := make(map[types.Object]resolvedDecl)
-	if pkg.TypesInfo == nil {
-		return decls
-	}
-	for _, file := range pkg.Syntax {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			if obj := pkg.TypesInfo.Defs[fn.Name]; obj != nil {
-				decls[obj] = resolvedDecl{Decl: fn, File: file}
-			}
-		}
-	}
-	return decls
 }
 
 // isServeMuxOrHTTPPackageCall reports whether sel.X refers to a *http.ServeMux
@@ -210,19 +181,23 @@ func isHTTPMethod(s string) bool { return httpMethods[s] }
 // (HandleFunc(pattern, GetUser)), a method value on a receiver
 // (HandleFunc(pattern, srv.GetUser)), a qualified identifier from another
 // package (HandleFunc(pattern, handlers.GetUser)), or an http.HandlerFunc
-// conversion of any of those. The declaration (and its file) is resolved
-// via go/types object identity rather than name matching, so it works for
-// methods too; both come back nil when the object lives outside pkg (e.g.
-// a handler defined in a different package), since cross-package
-// resolution isn't supported yet.
-func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]resolvedDecl) (name string, decl *ast.FuncDecl, file *ast.File, ok bool) {
+// conversion of any of those, plus the go/types object it resolves to.
+// decl/file are resolved via go/types object identity rather than name
+// matching (so it works for methods too) against decls, which only covers
+// the local package — they come back nil when the object lives outside
+// it (e.g. a handler defined in a different package). obj is still
+// returned in that case: internal/generate uses it to resolve the
+// declaration across every loaded package, since a single plugin
+// invocation only ever sees one.
+func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, ok bool) {
 	switch expr := e.(type) {
 	case *ast.Ident:
-		rd := decls[pkg.TypesInfo.Uses[expr]]
-		return expr.Name, rd.Decl, rd.File, true
+		identObj := pkg.TypesInfo.Uses[expr]
+		rd := decls[identObj]
+		return expr.Name, rd.Decl, rd.File, identObj, true
 	case *ast.CallExpr:
 		if len(expr.Args) != 1 {
-			return "", nil, nil, false
+			return "", nil, nil, nil, false
 		}
 		return resolveHandler(pkg, expr.Args[0], decls)
 	case *ast.SelectorExpr:
@@ -233,7 +208,7 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]re
 			obj = pkg.TypesInfo.Uses[expr.Sel] // qualified identifier, e.g. handlers.GetUser
 		}
 		rd := decls[obj]
-		return expr.Sel.Name, rd.Decl, rd.File, true
+		return expr.Sel.Name, rd.Decl, rd.File, obj, true
 	}
-	return "", nil, nil, false
+	return "", nil, nil, nil, false
 }

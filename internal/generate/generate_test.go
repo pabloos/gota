@@ -268,3 +268,48 @@ func TestRun_MarshalRoundTrip(t *testing.T) {
 		t.Fatal("empty JSON output")
 	}
 }
+
+// TestRun_CrossPackageHandler proves the full pipeline resolves a handler
+// registered from a different package than the one that declares it —
+// fixture: testdata/nethttp-cross-package. GetUser has a "gota:" comment
+// (proves comment extraction survives the package boundary); ListUsers
+// has none, only a json.Encoder call in its body (proves best-effort
+// body inference does too, using the *declaring* package's type info,
+// not the *registering* one — the actual risk this fix has to get right).
+func TestRun_CrossPackageHandler(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/nethttp-cross-package")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Plugins: []router.Plugin{nethttp.New()},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+
+	usersByID, ok := doc.Paths["/users/{id}"]
+	if !ok || usersByID.Get == nil {
+		t.Fatalf("missing GET /users/{id}: %+v", doc.Paths)
+	}
+	if usersByID.Get.Summary != "Get a user by ID" {
+		t.Errorf("GetUser's \"gota:\" comment wasn't picked up across the package boundary: Summary = %q", usersByID.Get.Summary)
+	}
+
+	users, ok := doc.Paths["/users"]
+	if !ok || users.Get == nil {
+		t.Fatalf("missing GET /users: %+v", doc.Paths)
+	}
+	resp200, ok := users.Get.Responses["200"]
+	if !ok {
+		t.Fatalf("ListUsers has no inferred 200 response — cross-package body detection didn't run: %+v", users.Get.Responses)
+	}
+	schema := resp200.Content["application/json"].Schema
+	if schema == nil || schema.Type != "array" {
+		t.Errorf("ListUsers 200 response schema = %+v, want an inferred array schema", schema)
+	}
+}
