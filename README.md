@@ -57,7 +57,14 @@ than the handler that references it.
 Handlers with **no** `gota:` comment at all also get a best-effort
 request/response schema, detected from the handler's own `encoding/json`
 calls (`Decoder.Decode`, `Encoder.Encode`, `json.Unmarshal`/`Marshal`,
-including slices). Response detection tracks the *real* status code — it
+including slices, maps, and basic types like a bare string or int). A
+map literal wrapping the real payload in an ad-hoc envelope — e.g.
+`json.NewEncoder(w).Encode(map[string]any{"status": "ok", "data": user})`,
+a common way to avoid a named response-envelope struct — gets an inline
+`object` schema built from its actual keys (only when every key is a
+compile-time constant; a dynamic key still produces a response, just a
+bare `{type: object}` with no enumerated properties, rather than nothing
+at all). Response detection tracks the *real* status code — it
 walks the body respecting if/else branch boundaries, pairing each
 `Encode`/`Marshal`/`http.Error` call with whatever `w.WriteHeader(<code>)`
 was last called in its own branch (or 200, Go's implicit default, if none
@@ -65,13 +72,37 @@ was), so a handler with a 404 error branch and a 201 success branch gets
 **both** documented as distinct responses, correctly numbered — not
 everything collapsed into a generic `200`.
 
-All of this is a heuristic over common idioms, not a dataflow analysis: it
-doesn't follow decode/encode/WriteHeader calls wrapped in helper
-functions, a `WriteHeader` call whose code isn't a compile-time constant is
-ignored, and if the *same* status code is produced more than once the last
-occurrence in source order wins (covers the common
-"if err != nil {...; return }; ..." shape). A `gota:` comment always
-overrides whatever this detects.
+Detection follows a chain of calls — same package or not, up to four
+calls deep — to a helper that itself calls
+Decode/Encode/WriteHeader/http.Error, or delegates further to another
+helper, treated as if it had all been inlined at the original call site.
+A parameter reference inside a followed helper resolves back to whatever
+expression was actually passed at its own call site, transitively
+through as many levels as it takes — e.g. a shared response library
+where `Success(w, status, data)` wraps `data` in a map-literal envelope
+and delegates the actual write to `JSON(w, status, payload)` in the same
+package, called from a handler in a completely different package,
+resolves all the way through to the handler's own value. This was tested
+against two real, representative Go HTTP APIs on GitHub: one (stdlib
+`net/http` only) where every handler routed its output through a single
+same-package `respond(w, code, data)` helper — before following, every
+response came out as a generic `200` with no schema; after, error and
+success responses alike get their real status codes and schemas. The
+other (13 resource modules) mixed the map-literal-envelope case above
+with exactly the cross-package, two-level `Success`/`JSON` shape — before
+cross-package/multi-level following, four of its POST endpoints still
+had no response schema at all despite the map-literal fix; after, all
+four resolve to the real payload type three frames up.
+
+All of this is a heuristic over common idioms, not a dataflow analysis:
+following stops after four calls, a helper already earlier in the
+current chain is declined immediately rather than followed into a cycle,
+a helper with a variadic parameter or an argument-count mismatch isn't
+followed at all, a `WriteHeader` call whose code isn't a compile-time
+constant is ignored, and if the *same* status code is produced more than
+once the last occurrence in source order wins (covers the common "if err
+!= nil {...; return }; ..." shape). A `gota:` comment always overrides
+whatever this detects.
 
 Since gota documents every registered route by default (unlike swaggo,
 which requires an annotation to appear at all), there's also
@@ -284,7 +315,7 @@ Core engine — everything router-agnostic:
 | Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set                                       | `internal/merger/merger_test.go` |
 | Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
 | Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
-| Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity | `internal/inference/body_test.go` |
+| Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, maps, basic types, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity, following a chain of same- or cross-package helpers up to four calls deep (both directions, cycle detection, nil-argument and variadic/arity-mismatch non-follow cases), map-literal envelopes (constant keys → inline object, dynamic key → bare object) | `internal/inference/body_test.go` |
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |

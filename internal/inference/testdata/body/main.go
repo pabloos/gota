@@ -22,6 +22,22 @@ type Response[T any] struct {
 	Data T `json:"data"`
 }
 
+type StatusResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// respond mirrors the response-writing helper found in a real,
+// representative Go HTTP API (leeprovoost/go-rest-api-template) where
+// every single handler routes its output through exactly this shape —
+// the motivating case for following one level into a local helper.
+func respond(w http.ResponseWriter, code int, data any) {
+	w.WriteHeader(code)
+	if data != nil {
+		json.NewEncoder(w).Encode(data)
+	}
+}
+
 func DecodeDirect(w http.ResponseWriter, r *http.Request) {
 	var u User
 	json.NewDecoder(r.Body).Decode(&u)
@@ -139,4 +155,133 @@ func SkippedEncodeWithCode(w http.ResponseWriter, r *http.Request) {
 	// gota:
 	//   x-gota-skip: true
 	json.NewEncoder(w).Encode(User{})
+}
+
+// RespondViaHelper mirrors the real repo's actual shape: a struct literal
+// passed directly as data any, no address-of.
+func RespondViaHelper(w http.ResponseWriter, r *http.Request) {
+	respond(w, http.StatusCreated, User{ID: 1})
+}
+
+// RespondViaHelperErrorThenSuccess mirrors handleCreateUser's real
+// validation-then-success shape: two respond(...) calls in sibling
+// branches, at two different explicit codes.
+func RespondViaHelperErrorThenSuccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		respond(w, http.StatusBadRequest, StatusResponse{Status: "error", Message: "bad request"})
+		return
+	}
+	respond(w, http.StatusCreated, User{ID: 1})
+}
+
+// RespondViaHelperNilData mirrors a delete-style handler. Detection is a
+// static AST walk, not a real interpreter — it doesn't evaluate respond's
+// own "if data != nil" condition, so it still statically finds the
+// Encode(data) call inside that branch and resolves data to this
+// nil literal, an untyped-nil type shallowRefSchema correctly declines
+// (same as it would for a direct "json.NewEncoder(w).Encode(nil)" call,
+// with no helper involved at all). Since nothing else in respond
+// registers a response on its own (a bare WriteHeader doesn't — see
+// NoPattern above), this handler must detect nothing, not a schema-less
+// 204 — a real behavior worth pinning down, not a bug in following.
+func RespondViaHelperNilData(w http.ResponseWriter, r *http.Request) {
+	respond(w, http.StatusNoContent, nil)
+}
+
+// wrapRespond calls respond itself — a second level of helper
+// indirection, still well within maxFollowDepth.
+func wrapRespond(w http.ResponseWriter, code int, data any) {
+	respond(w, code, data)
+}
+
+// RespondViaTwoHelpers must be followed all the way through: two levels
+// of local-helper indirection is no longer a special "capped at one
+// level" case, just a shorter instance of the same general mechanism
+// exercised by RespondViaTooManyHelpers below.
+func RespondViaTwoHelpers(w http.ResponseWriter, r *http.Request) {
+	wrapRespond(w, http.StatusCreated, User{ID: 1})
+}
+
+// wrapRespond2/3/4 stack three more levels on top of wrapRespond/respond,
+// making RespondViaTooManyHelpers below five calls away from its own
+// WriteHeader/Encode — one more than maxFollowDepth allows.
+func wrapRespond2(w http.ResponseWriter, code int, data any) {
+	wrapRespond(w, code, data)
+}
+
+func wrapRespond3(w http.ResponseWriter, code int, data any) {
+	wrapRespond2(w, code, data)
+}
+
+func wrapRespond4(w http.ResponseWriter, code int, data any) {
+	wrapRespond3(w, code, data)
+}
+
+// RespondViaTooManyHelpers must detect NOTHING: the chain down to
+// respond's own WriteHeader/Encode calls is five levels deep, one past
+// maxFollowDepth.
+func RespondViaTooManyHelpers(w http.ResponseWriter, r *http.Request) {
+	wrapRespond4(w, http.StatusCreated, User{ID: 1})
+}
+
+// cycleA/cycleB call each other and never reach a real WriteHeader/Encode
+// call — the direct regression fixture for cycle detection actually
+// terminating a mutually-recursive chain, not just the depth cap
+// eventually bailing (five levels, comfortably inside maxFollowDepth,
+// would otherwise recurse forever without it).
+func cycleA() {
+	cycleB()
+}
+
+func cycleB() {
+	cycleA()
+}
+
+// RespondViaCycle must detect nothing and, more importantly, must
+// terminate at all.
+func RespondViaCycle(w http.ResponseWriter, r *http.Request) {
+	cycleA()
+}
+
+// decodeJSON's own decode-target parameter (v) is a bare identifier, not
+// literally "&v" — the call site's actual argument ("&u" below) is what
+// needs to surface before decodeCallType's "is this &x" check.
+func decodeJSON(r *http.Request, v any) error {
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+func DecodeViaHelper(w http.ResponseWriter, r *http.Request) {
+	var u User
+	decodeJSON(r, &u)
+}
+
+// EncodeMapLiteralResponse mirrors a real, common pattern found in
+// production Go APIs: wrapping the real payload in an ad-hoc envelope
+// via a map literal directly at the call site, instead of a named
+// struct.
+func EncodeMapLiteralResponse(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": User{ID: 1}})
+}
+
+func computeKey() string { return "status" }
+
+// EncodeMapLiteralDynamicKey's key isn't a compile-time constant, so
+// mapLiteralSchema can't enumerate it — this must still produce a
+// response (an honest, lesser degrade via the type-based path: a bare
+// {type: object} with no properties), not zero response.
+func EncodeMapLiteralDynamicKey(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]any{computeKey(): "ok"})
+}
+
+// EncodeNamedStringMap exercises shallowRefSchema's own *types.Map case
+// directly (a variable, not a literal) rather than mapLiteralSchema.
+func EncodeNamedStringMap(w http.ResponseWriter, r *http.Request) {
+	m := map[string]User{"a": {ID: 1}}
+	json.NewEncoder(w).Encode(m)
+}
+
+// EncodeBareString exercises the new top-level *types.Basic case with
+// no wrapping at all.
+func EncodeBareString(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode("ok")
 }

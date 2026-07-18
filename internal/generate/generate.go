@@ -64,7 +64,7 @@ func Run(opts Options) (*model.Document, error) {
 				if route.File != nil {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
-				op, err := buildOperation(route, info, cmap)
+				op, err := buildOperation(route, info, cmap, globalIndex)
 				if err != nil {
 					return nil, err
 				}
@@ -102,13 +102,15 @@ func Run(opts Options) (*model.Document, error) {
 
 // buildOperation infers a baseline Operation for route (including a
 // best-effort request/response body detected from the handler's own
-// encoding/json calls, using cmap to honor any "x-gota-skip" comment
-// attached to a specific statement), extracts any "gota:" comment on the
-// handler itself, and merges the two (comment wins — including a
-// handler-level "x-gota-skip: true", which excludes the whole operation).
-func buildOperation(route router.Route, info *types.Info, cmap ast.CommentMap) (*model.Operation, error) {
+// encoding/json calls — following one level into a same-package helper
+// via funcIndex, see inference.DetectBody — using cmap to honor any
+// "x-gota-skip" comment attached to a specific statement), extracts any
+// "gota:" comment on the handler itself, and merges the two (comment
+// wins — including a handler-level "x-gota-skip: true", which excludes
+// the whole operation).
+func buildOperation(route router.Route, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo) (*model.Operation, error) {
 	inferred := inference.Operation(route)
-	inference.DetectBody(inferred, route.HandlerDecl, info, cmap)
+	inference.DetectBody(inferred, route.HandlerDecl, info, cmap, funcIndex)
 
 	if route.HandlerDecl == nil {
 		return inferred, nil
