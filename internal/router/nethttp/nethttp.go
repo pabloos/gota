@@ -18,6 +18,7 @@ package nethttp
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"net/http"
@@ -77,6 +78,24 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 				return true
 			}
 			methods, path := splitPattern(pattern)
+
+			// A method-less pattern whose handler is an anonymous function
+			// doing its own switch/if-else dispatch on r.Method (the
+			// pre-Go-1.22 idiom for method dispatch on one path) needs a
+			// completely different extraction: one Route per branch, each
+			// bound to that branch's real delegate handler — not one
+			// Route per allMethods entry bound to the anonymous closure
+			// itself, which resolveHandler below would never resolve
+			// anyway (it has no case for *ast.FuncLit).
+			if len(methods) > 1 {
+				if lit, ok := unwrapCall(call.Args[1]).(*ast.FuncLit); ok {
+					if dispatched, ok := dispatchRoutes(pkg, lit, funcDecls, path, pkg.Fset.Position(call.Pos())); ok {
+						routes = append(routes, dispatched...)
+						return true
+					}
+				}
+			}
+
 			handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, call.Args[1], funcDecls)
 			if !ok {
 				return true
@@ -177,6 +196,21 @@ var httpMethods = map[string]bool{
 
 func isHTTPMethod(s string) bool { return httpMethods[s] }
 
+// unwrapCall strips single-argument call layers off e — the shape of an
+// http.HandlerFunc(...) conversion or a middleware(...) wrapper — down to
+// whatever's inside. Shared by resolveHandler (which switches on the
+// unwrapped result for an identifier/selector) and dispatchRoutes'
+// FuncLit detection (which switches on it for an anonymous function).
+func unwrapCall(e ast.Expr) ast.Expr {
+	for {
+		call, ok := e.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return e
+		}
+		e = call.Args[0]
+	}
+}
+
 // resolveHandler extracts the handler name from a bare identifier
 // (HandleFunc(pattern, GetUser)), a method value on a receiver
 // (HandleFunc(pattern, srv.GetUser)), a qualified identifier from another
@@ -190,16 +224,11 @@ func isHTTPMethod(s string) bool { return httpMethods[s] }
 // declaration across every loaded package, since a single plugin
 // invocation only ever sees one.
 func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, ok bool) {
-	switch expr := e.(type) {
+	switch expr := unwrapCall(e).(type) {
 	case *ast.Ident:
 		identObj := pkg.TypesInfo.Uses[expr]
 		rd := decls[identObj]
 		return expr.Name, rd.Decl, rd.File, identObj, true
-	case *ast.CallExpr:
-		if len(expr.Args) != 1 {
-			return "", nil, nil, nil, false
-		}
-		return resolveHandler(pkg, expr.Args[0], decls)
 	case *ast.SelectorExpr:
 		var obj types.Object
 		if selection, ok := pkg.TypesInfo.Selections[expr]; ok {
@@ -211,4 +240,236 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]as
 		return expr.Sel.Name, rd.Decl, rd.File, obj, true
 	}
 	return "", nil, nil, nil, false
+}
+
+// methodBranch is one recognized "case http.MethodX:"/"if r.Method ==
+// http.MethodX" branch of a hand-rolled dispatcher: the method it
+// handles, and the single delegate call its body makes.
+type methodBranch struct {
+	method string
+	call   *ast.CallExpr
+}
+
+// dispatchRoutes recognizes lit as a hand-rolled method dispatcher — the
+// pre-Go-1.22 idiom for method dispatch on one ServeMux pattern, usually
+// layered under one or more middleware-wrapping calls (e.g.
+// "mux.Handle(pattern, secure(http.HandlerFunc(func(w,r){ switch
+// r.Method {...} })))") — and, on a full match, returns one Route per
+// branch, each bound to that branch's real delegate handler (resolved
+// via resolveHandler, unchanged) rather than the anonymous closure
+// itself. Declines (ok=false, not an error) unless lit's params are
+// exactly (http.ResponseWriter, *http.Request)-shaped and its body
+// matches methodBranches — see that function for exactly what shapes
+// are and aren't recognized. This is deliberately narrow, not a general
+// control-flow analysis: any registration that doesn't fit produces no
+// routes at all, the same as today, rather than a partial guess.
+func dispatchRoutes(pkg *packages.Package, lit *ast.FuncLit, decls map[types.Object]astutil.FuncDeclInfo, path string, pos token.Position) ([]router.Route, bool) {
+	params := lit.Type.Params.List
+	if len(params) != 2 || len(params[0].Names) != 1 || len(params[1].Names) != 1 {
+		return nil, false
+	}
+	if lit.Body == nil {
+		return nil, false
+	}
+
+	branches, ok := methodBranches(lit.Body.List, pkg.TypesInfo)
+	if !ok {
+		return nil, false
+	}
+
+	var routes []router.Route
+	for _, b := range branches {
+		handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, b.call.Fun, decls)
+		if !ok {
+			return nil, false // one unresolvable branch aborts the whole registration -- see dispatchRoutes' doc comment
+		}
+		routes = append(routes, router.Route{
+			Method:      b.method,
+			Path:        path,
+			HandlerName: handlerName,
+			HandlerDecl: decl,
+			File:        declFile,
+			HandlerObj:  handlerObj,
+			Pos:         pos,
+		})
+	}
+	return routes, len(routes) > 0
+}
+
+// methodBranches recognizes stmts as exactly one top-level statement — a
+// "switch r.Method { ... }" or an "if r.Method == X {...} else if ...
+// else {...}" chain, the two idiomatic shapes for hand-rolled method
+// dispatch — and extracts one methodBranch per case/condition. Declines
+// for anything else: more than one top-level statement (rules out any
+// extra guard logic before or after the dispatch, e.g. a leading
+// "if strings.HasSuffix(r.URL.Path, ...)" path check), or a shape
+// switchMethodBranches/ifMethodBranches themselves decline.
+func methodBranches(stmts []ast.Stmt, info *types.Info) ([]methodBranch, bool) {
+	if len(stmts) != 1 {
+		return nil, false
+	}
+	switch s := stmts[0].(type) {
+	case *ast.SwitchStmt:
+		return switchMethodBranches(s, info)
+	case *ast.IfStmt:
+		return ifMethodBranches(s, info)
+	}
+	return nil, false
+}
+
+// switchMethodBranches recognizes s as "switch r.Method { case
+// http.MethodX: delegate(w, r) ... }". Requires no init statement and a
+// tag that's an r.Method selector (see isRequestMethodSelector). Each
+// non-default case (a nil cc.List marks "default:", which — like any
+// other branch that isn't itself a method match, e.g. a typical
+// "methodNotAllowed(w)" — is simply not a branch, not an error) must
+// have exactly one value (a "case A, B:" with multiple values declines
+// the whole switch, not just that clause) evaluating to a real HTTP
+// method, and a body of exactly one statement — an empty case body
+// fails this the same as a multi-statement one.
+func switchMethodBranches(s *ast.SwitchStmt, info *types.Info) ([]methodBranch, bool) {
+	if s.Init != nil || !isRequestMethodSelector(s.Tag, info) {
+		return nil, false
+	}
+	var branches []methodBranch
+	for _, clause := range s.Body.List {
+		cc, ok := clause.(*ast.CaseClause)
+		if !ok || cc.List == nil { // nil List: "default:"
+			continue
+		}
+		if len(cc.List) != 1 {
+			return nil, false
+		}
+		method, ok := constStringArg(cc.List[0], info)
+		if !ok || !isHTTPMethod(method) {
+			return nil, false
+		}
+		if method == http.MethodConnect {
+			continue // no OpenAPI Path Item slot for it -- see allMethods
+		}
+		call, ok := singleCallBody(cc.Body)
+		if !ok {
+			return nil, false
+		}
+		branches = append(branches, methodBranch{method: method, call: call})
+	}
+	return branches, len(branches) > 0
+}
+
+// ifMethodBranches recognizes s as "if r.Method == http.MethodX {
+// delegate(w, r) } else if ... else { ... }". Each condition must be a
+// plain r.Method equality check (see methodEqualityCond) and each body
+// exactly one statement. A trailing plain "else { ... }" (typically
+// "methodNotAllowed(w)") ends the chain successfully without being
+// treated as a branch — the same "not a branch, ignored" treatment
+// switchMethodBranches gives "default:". Anything else (a condition
+// involving more than r.Method, an init statement, a multi-statement
+// body) declines the whole chain.
+func ifMethodBranches(s *ast.IfStmt, info *types.Info) ([]methodBranch, bool) {
+	var branches []methodBranch
+	for {
+		if s.Init != nil {
+			return nil, false
+		}
+		method, ok := methodEqualityCond(s.Cond, info)
+		if !ok {
+			return nil, false
+		}
+		call, ok := singleCallBody(s.Body.List)
+		if !ok {
+			return nil, false
+		}
+		if method != http.MethodConnect { // no OpenAPI Path Item slot for it -- see allMethods
+			branches = append(branches, methodBranch{method: method, call: call})
+		}
+
+		switch e := s.Else.(type) {
+		case nil:
+			return branches, len(branches) > 0
+		case *ast.IfStmt:
+			s = e
+		case *ast.BlockStmt:
+			return branches, len(branches) > 0 // trailing "else {...}" ends the chain, not a branch
+		default:
+			return nil, false
+		}
+	}
+}
+
+// methodEqualityCond recognizes cond as "r.Method == http.MethodX" (in
+// either operand order) and returns the method.
+func methodEqualityCond(cond ast.Expr, info *types.Info) (string, bool) {
+	bin, ok := cond.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.EQL {
+		return "", false
+	}
+	var methodExpr ast.Expr
+	switch {
+	case isRequestMethodSelector(bin.X, info):
+		methodExpr = bin.Y
+	case isRequestMethodSelector(bin.Y, info):
+		methodExpr = bin.X
+	default:
+		return "", false
+	}
+	method, ok := constStringArg(methodExpr, info)
+	if !ok || !isHTTPMethod(method) {
+		return "", false
+	}
+	return method, true
+}
+
+// isRequestMethodSelector reports whether e is a ".Method" selector on
+// something whose static type is *net/http.Request — checked by type,
+// the same idiom isHTTPResponseWriter already uses, not by object
+// identity, so it doesn't matter which *http.Request variable is in
+// scope (a handler only ever has one in practice).
+func isRequestMethodSelector(e ast.Expr, info *types.Info) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Method" {
+		return false
+	}
+	t := info.TypeOf(sel.X)
+	if t == nil {
+		return false
+	}
+	ptr, ok := t.(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := ptr.Elem().(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Pkg() != nil && obj.Pkg().Path() == "net/http" && obj.Name() == "Request"
+}
+
+// singleCallBody reports whether stmts is exactly one statement — an
+// expression statement wrapping a 2-argument call, the "delegate(w, r)"
+// shape every recognized branch body must have.
+func singleCallBody(stmts []ast.Stmt) (*ast.CallExpr, bool) {
+	if len(stmts) != 1 {
+		return nil, false
+	}
+	exprStmt, ok := stmts[0].(*ast.ExprStmt)
+	if !ok {
+		return nil, false
+	}
+	call, ok := exprStmt.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 {
+		return nil, false
+	}
+	return call, true
+}
+
+// constStringArg evaluates e as a compile-time string constant (a
+// literal like "GET" or a named constant like http.MethodGet), the
+// string-typed sibling of internal/inference/body.go's constIntArg.
+func constStringArg(e ast.Expr, info *types.Info) (string, bool) {
+	tv, ok := info.Types[e]
+	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
+		return "", false
+	}
+	return constant.StringVal(tv.Value), true
 }

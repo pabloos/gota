@@ -359,3 +359,46 @@ func TestRun_GenericResponses(t *testing.T) {
 		t.Errorf("Response_Product.data = %+v, want $ref to Product", respProduct.Properties["data"])
 	}
 }
+
+// TestRun_OperationIDDisambiguation is the regression test for a real
+// bug found running gota against a large, real Go API: a method-less
+// pattern (net/http's ServeMux matches every method) expands into 8
+// operations all bound to the same handler, so all 8 infer the identical
+// operationId — an invalid OpenAPI document (operationId must be
+// globally unique) that emitter.Validate correctly rejected, blocking
+// generation entirely. generate.Run must disambiguate before that point
+// is ever reached.
+func TestRun_OperationIDDisambiguation(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/nethttp-operationid-collision")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Plugins: []router.Plugin{nethttp.New()},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v (operationId collisions must be disambiguated, not left to fail validation)", err)
+	}
+
+	item, ok := doc.Paths["/login"]
+	if !ok {
+		t.Fatalf("missing /login: %+v", doc.Paths)
+	}
+	ids := map[string]bool{}
+	for _, op := range item.Operations() {
+		if ids[op.OperationID] {
+			t.Errorf("duplicate operationId %q across /login's operations", op.OperationID)
+		}
+		ids[op.OperationID] = true
+		if op.OperationID == "Login" {
+			t.Errorf("operationId = %q, want the bare handler name disambiguated (method+path appended), since 8 operations share it", op.OperationID)
+		}
+	}
+	if len(ids) != 8 {
+		t.Fatalf("got %d distinct operationIds, want 8 (one per expanded method): %v", len(ids), ids)
+	}
+}

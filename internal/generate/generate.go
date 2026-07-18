@@ -9,6 +9,8 @@ import (
 	"go/token"
 	"go/types"
 	"sort"
+	"strings"
+	"unicode"
 
 	"github.com/pabloos/gota/internal/astutil"
 	"github.com/pabloos/gota/internal/emitter"
@@ -44,7 +46,11 @@ func Run(opts Options) (*model.Document, error) {
 	// this covers every loaded package instead.
 	globalIndex := astutil.IndexFuncDecls(pkgs)
 
-	var routeOps []emitter.RouteOperation
+	// pending holds every route's inferred (not yet merged with any
+	// "gota:" comment) Operation, so operationIDs can be disambiguated
+	// across the whole document — see disambiguateOperationIDs — before
+	// any comment gets a chance to declare its own explicit operationId.
+	var pending []pendingOperation
 	for _, pkg := range pkgs {
 		for _, plugin := range opts.Plugins {
 			routes, err := plugin.Extract(pkg)
@@ -64,20 +70,29 @@ func Run(opts Options) (*model.Document, error) {
 				if route.File != nil {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
-				op, err := buildOperation(route, info, cmap, globalIndex)
-				if err != nil {
-					return nil, err
-				}
-				if op.Skip {
-					continue
-				}
-				routeOps = append(routeOps, emitter.RouteOperation{
-					Method:    route.Method,
-					Path:      route.Path,
-					Operation: op,
-				})
+				inferred := inference.Operation(route)
+				inference.DetectBody(inferred, route.HandlerDecl, info, cmap, globalIndex)
+				pending = append(pending, pendingOperation{route: route, info: info, cmap: cmap, op: inferred})
 			}
 		}
+	}
+
+	disambiguateOperationIDs(pending)
+
+	var routeOps []emitter.RouteOperation
+	for _, p := range pending {
+		op, err := mergeDeclaredComment(p.route, p.op)
+		if err != nil {
+			return nil, err
+		}
+		if op.Skip {
+			continue
+		}
+		routeOps = append(routeOps, emitter.RouteOperation{
+			Method:    p.route.Method,
+			Path:      p.route.Path,
+			Operation: op,
+		})
 	}
 
 	sort.Slice(routeOps, func(i, j int) bool {
@@ -100,18 +115,79 @@ func Run(opts Options) (*model.Document, error) {
 	return doc, nil
 }
 
-// buildOperation infers a baseline Operation for route (including a
-// best-effort request/response body detected from the handler's own
-// encoding/json calls — following one level into a same-package helper
-// via funcIndex, see inference.DetectBody — using cmap to honor any
-// "x-gota-skip" comment attached to a specific statement), extracts any
-// "gota:" comment on the handler itself, and merges the two (comment
-// wins — including a handler-level "x-gota-skip: true", which excludes
-// the whole operation).
-func buildOperation(route router.Route, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo) (*model.Operation, error) {
-	inferred := inference.Operation(route)
-	inference.DetectBody(inferred, route.HandlerDecl, info, cmap, funcIndex)
+// pendingOperation is one route's inferred (pre-merge) Operation,
+// carrying what's still needed to later extract and merge its "gota:"
+// comment.
+type pendingOperation struct {
+	route router.Route
+	info  *types.Info
+	cmap  ast.CommentMap
+	op    *model.Operation
+}
 
+// disambiguateOperationIDs appends the HTTP method and path (PascalCase,
+// e.g. "GetUsersId") to every inferred OperationID in a group of 2+
+// pending operations that would otherwise collide. Two ways this
+// happens in practice: a method-less ServeMux pattern expands into every
+// HTTP method, all bound to the same handler (see nethttp.splitPattern),
+// so every one of those operations infers the identical OperationID (the
+// handler's own name); or the exact same handler is registered at more
+// than one path (e.g. a shared WebSocket upgrader). Method alone
+// resolves the first case but not the second (same handler, same method,
+// different paths) — method+path resolves both in one pass, and is
+// always sufficient, since (method, path) pairs are already guaranteed
+// unique by the time this runs (emitter.Build itself rejects a literal
+// duplicate route). Left alone, either case violates OpenAPI's global
+// operationId-uniqueness rule and emitter.Validate rejects the whole
+// document. Run before any "gota:" comment is merged in, so an
+// explicitly declared operationId is never touched by this — only
+// gota's own inferred default is; two distinct *declared* operationIds
+// that happen to collide remain a real error, caught by emitter.Validate
+// same as any other structural mistake.
+func disambiguateOperationIDs(pending []pendingOperation) {
+	groups := map[string][]int{}
+	for i, p := range pending {
+		groups[p.op.OperationID] = append(groups[p.op.OperationID], i)
+	}
+	for _, idxs := range groups {
+		if len(idxs) < 2 {
+			continue
+		}
+		for _, i := range idxs {
+			route := pending[i].route
+			method := strings.ToUpper(route.Method[:1]) + strings.ToLower(route.Method[1:])
+			pending[i].op.OperationID += method + pathSuffix(route.Path)
+		}
+	}
+}
+
+// pathSuffix converts path into a PascalCase identifier fragment
+// ("/ws/inventory" -> "WsInventory") for disambiguateOperationIDs —
+// every run of letters/digits becomes a capitalized word, everything
+// else (slashes, path-param braces, hyphens, ...) is just a word
+// boundary.
+func pathSuffix(path string) string {
+	var b strings.Builder
+	upperNext := true
+	for _, r := range path {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			upperNext = true
+			continue
+		}
+		if upperNext {
+			b.WriteRune(unicode.ToUpper(r))
+			upperNext = false
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// mergeDeclaredComment extracts any "gota:" comment on route's handler
+// and merges it into inferred (comment wins — including a handler-level
+// "x-gota-skip: true", which excludes the whole operation).
+func mergeDeclaredComment(route router.Route, inferred *model.Operation) (*model.Operation, error) {
 	if route.HandlerDecl == nil {
 		return inferred, nil
 	}

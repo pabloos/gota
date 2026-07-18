@@ -3,6 +3,7 @@ package nethttp_test
 import (
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -251,6 +252,55 @@ func TestExtract_CrossPackageHandler(t *testing.T) {
 		// FuncDecl), not some unrelated function that happens to share a name.
 		if r.Path == "/items/{id}" && fd.Decl.Recv == nil {
 			t.Errorf("GetItem's resolved decl has no receiver; resolved the wrong FuncDecl")
+		}
+	}
+}
+
+// TestExtract_MethodDispatchFuncLit pins down the hand-rolled
+// method-dispatcher idiom found in a real, representative Go HTTP API:
+// a method-less pattern whose handler is an anonymous function that
+// itself switches or branches on r.Method, wrapped in a middleware call
+// and an http.HandlerFunc conversion. Fixture: testdata/routes_method_dispatch.
+func TestExtract_MethodDispatchFuncLit(t *testing.T) {
+	pkgs := loadFixture(t, "routes_method_dispatch")
+
+	routes, err := nethttp.New().Extract(pkgs[0])
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	got := map[string]router.Route{}
+	for _, r := range routes {
+		got[r.Method+" "+r.Path] = r
+	}
+
+	// The deliberately-too-complex "/products/" registration (a
+	// strings.HasSuffix path guard before the dispatch) must produce
+	// zero routes -- not a partial/wrong guess.
+	for key := range got {
+		if strings.HasPrefix(key, "GET /products/") || strings.HasPrefix(key, "POST /products/") {
+			t.Errorf("route %q: the /products/ registration is deliberately too complex to recognize, want no routes from it at all", key)
+		}
+	}
+
+	wantRoutes := map[string]string{
+		"POST /products":   "CreateProduct",
+		"GET /products":    "ListProducts",
+		"GET /warehouses/": "GetWarehouse",
+	}
+	if len(got) != len(wantRoutes) {
+		t.Fatalf("got %d routes, want %d: %+v", len(got), len(wantRoutes), got)
+	}
+	for key, wantHandler := range wantRoutes {
+		r, ok := got[key]
+		if !ok {
+			t.Fatalf("missing route %q, got: %+v", key, got)
+		}
+		if r.HandlerName != wantHandler {
+			t.Errorf("route %q: HandlerName = %q, want %q (the real delegate, not the anonymous closure)", key, r.HandlerName, wantHandler)
+		}
+		if r.HandlerDecl == nil {
+			t.Errorf("route %q: HandlerDecl is nil, want the delegate's own *ast.FuncDecl (so its \"gota:\" comment can be extracted)", key)
 		}
 	}
 }

@@ -44,7 +44,36 @@ func GetUser(w http.ResponseWriter, r *http.Request) { ... }
 net/http's own `ServeMux` docs, so gota expands it into one operation per
 HTTP method it supports (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS,
 TRACE — not CONNECT, which OpenAPI's Path Item Object has no slot for)
-rather than assuming GET.
+rather than assuming GET. If that expansion would make two or more
+operations infer the same `operationId` (the guaranteed case: the
+handler is the same for all of them), gota disambiguates by appending
+the method and path rather than emitting an invalid document.
+
+A method-less pattern registered against an anonymous function that
+itself dispatches on `r.Method` — the common pre-Go-1.22 idiom for
+method routing on one path — is also recognized, *not* expanded to every
+method:
+```go
+mux.Handle("/products", secure(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		CreateProduct(w, r)
+	case http.MethodGet:
+		ListProducts(w, r)
+	default:
+		methodNotAllowed(w)
+	}
+})))
+```
+splits into one operation per `case` (or `if`/`else if` branch), each
+correctly bound to its real delegate handler — not the anonymous
+closure — including that handler's own `gota:` comment, if any. This is
+narrow, not a general control-flow analysis: the closure's entire body
+must be exactly that one switch/if-else chain, and each branch exactly
+one call. Any extra logic mixed into the dispatch (e.g. a path-substring
+check alongside the method check) falls outside this and the
+registration is left undetected, same as before this existed — not a
+partial or incorrect guess.
 
 A `gota:` comment can declare `schema: {$ref: '#/components/schemas/User'}`,
 and gota generates that component automatically from the matching Go
@@ -319,7 +348,7 @@ Core engine — everything router-agnostic:
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `nethttp-generics` fixture proving two generic instantiations resolve distinctly | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
 router's API (only `net/http` exists today; this table's shape is meant
@@ -332,6 +361,7 @@ to scale as Chi/Gin plugins get added):
 | Handler resolution: bare identifier            | ✅ |
 | Handler resolution: method value (bound method) | ✅ |
 | Handler resolution: cross-package reference    | ✅ |
+| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ |
 
 Tests: `internal/router/nethttp/nethttp_test.go`. Cross-package
 resolution itself is plugin-agnostic (`internal/astutil`, exercised
