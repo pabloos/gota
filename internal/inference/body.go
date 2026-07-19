@@ -5,7 +5,7 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
-	"net/http"
+	"net/http" // for StatusOK/StatusText only — HTTP protocol semantics, not a framework dependency (those live in dialect_nethttp.go)
 	"strconv"
 
 	"github.com/pabloos/gota/internal/astutil"
@@ -13,19 +13,18 @@ import (
 	"github.com/pabloos/gota/pkg/model"
 )
 
-// DetectBody is a best-effort heuristic that inspects decl's body for
-// common net/http + encoding/json idioms and, when found, augments op
-// with a requestBody and/or response schemas. It recognizes:
+// DetectBody is a best-effort heuristic that walks decl's body looking
+// for the request/response idioms d recognizes (see Dialect; the call
+// shapes themselves — e.g. netHTTPDialect's Decode/Encode/WriteHeader/
+// http.Error set — live with each dialect, not here) and, when found,
+// augments op with a requestBody and/or response schemas. A chain of
+// helper functions wrapping a recognized call — same-package or not —
+// is followed as if inlined, see "Following indirection" below.
 //
-//	json.NewDecoder(r.Body).Decode(&x)   // or a variable holding *json.Decoder
-//	json.Unmarshal(data, &x)
-//	json.NewEncoder(w).Encode(x)         // or a variable holding *json.Encoder
-//	json.Marshal(x)
-//	w.WriteHeader(<constant code>)       // tracked per branch, see below
-//	http.Error(w, msg, <constant code>)
-//
-// plus a chain of calls wrapping any of the above in helper functions —
-// same-package or not — see "Following indirection" below.
+// A nil d disables detection entirely (the operation is still
+// documented from routes and "gota:" comments, just without inferred
+// bodies) — the honest degrade for a router plugin with no paired
+// dialect.
 //
 // The detected schema is a bare "$ref: '#/components/schemas/<Name>'" (or
 // an array of one) using the same convention a hand-written "gota:"
@@ -51,9 +50,9 @@ import (
 //
 // funcIndex (typically internal/astutil.IndexFuncDecls over every loaded
 // package) lets detection follow a call to a helper function — in the
-// same package or a different one — that itself calls
-// Decode/Encode/WriteHeader/http.Error, or delegates further to another
-// helper, up to maxFollowDepth calls deep. A parameter reference inside
+// same package or a different one — that itself makes a call the
+// dialect recognizes, or delegates further to another helper, up to
+// maxFollowDepth calls deep. A parameter reference inside
 // a followed helper's body resolves back to whatever expression was
 // actually passed at its own call site, transitively through as many
 // levels as it takes — e.g.:
@@ -75,33 +74,37 @@ import (
 // which resolves again to products' own "product" — two packages, two
 // levels of helper, one detected 201 response with a real schema.
 //
-// Declining to follow (silent, not an error) happens for: a call to
-// anything that isn't a plain function reference (a stdlib call, a
-// method value, a variable holding a function); a helper with a
-// variadic parameter; an argument count that doesn't match the helper's
-// parameter count; a chain already maxFollowDepth calls deep; and a
-// helper already present earlier in the current chain (a direct or
-// mutual cycle — declined immediately, not just eventually stopped by
-// the depth cap, since nothing here does real dataflow analysis and an
-// unbounded static call graph walk has no other way to terminate on a
-// recursive helper). Pass a nil funcIndex to disable this entirely.
+// Followable helpers include functions and methods alike, as long as
+// their declaration is in the analyzed module (that's what funcIndex
+// spans) — a server struct's own s.respond(...) is followed the same
+// as a free function, while a call outside the module (a stdlib or
+// framework call) or through a function-typed variable declines.
+// Declining to follow (silent, not an error) also happens for: a
+// helper with a variadic parameter; an argument count that doesn't
+// match the helper's parameter count; a chain already maxFollowDepth
+// calls deep; and a helper already present earlier in the current
+// chain (a direct or mutual cycle — declined immediately, not just
+// eventually stopped by the depth cap, since nothing here does real
+// dataflow analysis and an unbounded static call graph walk has no
+// other way to terminate on a recursive helper). Pass a nil funcIndex
+// to disable following entirely.
 //
 // cmap, if non-nil, lets a specific statement opt out of response
 // detection entirely via a "gota:" comment declaring "x-gota-skip: true"
 // placed directly above it — e.g. an immature error path the developer
 // doesn't want documented yet, without affecting the rest of the
-// handler's detected responses. This only applies to response detection
-// (Encode/Marshal/http.Error), not request body detection, and only to
-// statements in decl's own body — a "gota:" comment inside a followed
-// helper's body has no effect (cmap is built from decl's own file, and a
-// shared helper has no single caller to scope a skip to anyway).
-func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo) {
-	if op == nil || decl == nil || decl.Body == nil || info == nil {
+// handler's detected responses. This only applies to response
+// detection, not request body detection, and only to statements in
+// decl's own body — a "gota:" comment inside a followed helper's body
+// has no effect (cmap is built from decl's own file, and a shared
+// helper has no single caller to scope a skip to anyway).
+func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo, d Dialect) {
+	if op == nil || decl == nil || decl.Body == nil || info == nil || d == nil {
 		return
 	}
-	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}}
+	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}, dialect: d}
 
-	if schema, ok := firstBodySchema(decl.Body, ctx, decodeCallType); ok {
+	if schema, ok := firstBodySchema(decl.Body, ctx); ok {
 		op.RequestBody = &model.RequestBody{
 			Required: true,
 			Content:  map[string]model.MediaType{"application/json": {Schema: schema}},
@@ -144,6 +147,7 @@ type evalCtx struct {
 	funcIndex map[types.Object]astutil.FuncDeclInfo
 	depth     int                   // 0 at the top level, incremented by one per follow
 	visiting  map[types.Object]bool // every helper already in the current follow chain, for cycle detection
+	dialect   Dialect               // the recognizer set in effect, constant across the whole walk (followed frames inherit it)
 }
 
 // boundExpr is a followed helper's parameter binding: the expression
@@ -180,12 +184,17 @@ func resolveExpr(e ast.Expr, ctx *evalCtx) (ast.Expr, *evalCtx) {
 	}
 }
 
-// tryFollow reports whether call is a followable helper call: a plain
-// function reference — a bare identifier (respond(...)) or a qualified
-// package-level identifier (httputil.Success(...)), never a method value
-// (a method selector has no entry in info.Uses, only info.Selections, so
-// this exclusion happens on its own without an explicit check) —
-// resolving via funcIndex to a declaration with a body. On success,
+// tryFollow reports whether call is a followable helper call: a bare
+// identifier (respond(...)), a qualified package-level identifier
+// (httputil.Success(...)), or a method on a type declared in the
+// analyzed module (s.respond(...) — a server struct carrying response
+// helpers is a common real-world shape; the receiver isn't a parameter,
+// so bindParams binds the plain arguments positionally exactly as for a
+// function). An *external* method like a framework context's c.JSON(...)
+// resolves to a real object too, but declines at the funcIndex lookup —
+// only the analyzed module's declarations are indexed — not because of
+// any go/types gap. All of these resolve via funcIndex to a declaration
+// with a body. On success,
 // returns the callee's body statements and a new context: info switched
 // to the callee's own package (astutil.FuncDeclInfo.Info, which may
 // differ from ctx.info), subst bound from the call's arguments (see
@@ -220,15 +229,18 @@ func tryFollow(call *ast.CallExpr, ctx *evalCtx) (stmts []ast.Stmt, newCtx *eval
 		funcIndex: ctx.funcIndex,
 		depth:     ctx.depth + 1,
 		visiting:  visiting,
+		dialect:   ctx.dialect,
 	}, true
 }
 
-// followCallee resolves call.Fun to the types.Object it refers to, for
-// the two shapes tryFollow treats as followable: a bare identifier or a
-// qualified (package-level) selector. Returns nil for anything else,
-// including a method value — a method selector is recorded in
-// info.Selections, not info.Uses, so this simply never matches, no
-// explicit exclusion needed.
+// followCallee resolves call.Fun to the types.Object it refers to: a
+// bare identifier via its own Uses entry, or a selector via the
+// selection's Sel — which covers BOTH qualified package-level
+// identifiers (pkg.Func) and method selectors (recv.Method): go/types'
+// recordSelection registers the selected method object in Uses too
+// (GOROOT go/types/check.go, recordUse(x.Sel, obj)), it is NOT
+// Selections-only. Whether a resolved method is actually followed is
+// decided by tryFollow's funcIndex lookup, not here.
 func followCallee(call *ast.CallExpr, ctx *evalCtx) types.Object {
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
@@ -307,6 +319,13 @@ func (rc *responseCollector) walk(stmts []ast.Stmt, code int, ctx *evalCtx, cmap
 // "gota:" comment declaring "x-gota-skip: true" attached to it (via cmap)
 // is invisible to detection entirely: it doesn't record a response and
 // doesn't update the code in effect.
+//
+// DeferStmt and GoStmt are skipped deliberately, not omissions: a
+// deferred call runs at function exit, so pairing it with the code in
+// effect at its *statement position* — the only model this walk has —
+// would be wrong more often than right; and a response written from a
+// spawned goroutine is a data race in the program under analysis, not
+// a shape worth documenting.
 func (rc *responseCollector) walkStmt(stmt ast.Stmt, code int, ctx *evalCtx, cmap ast.CommentMap) int {
 	if isSkipped(stmt, cmap) {
 		return code
@@ -322,9 +341,28 @@ func (rc *responseCollector) walkStmt(stmt ast.Stmt, code int, ctx *evalCtx, cma
 				code = rc.walkCall(call, code, ctx, cmap)
 			}
 		}
+	case *ast.ReturnStmt:
+		// return json.NewEncoder(w).Encode(v) — the whole response
+		// written in return position, ubiquitous inside error-returning
+		// helpers (and the entire idiom of frameworks like Echo). Any
+		// ambient change is discarded: nothing runs after a return, so
+		// there is no sibling for it to apply to.
+		for _, result := range s.Results {
+			if call, ok := result.(*ast.CallExpr); ok {
+				rc.walkCall(call, code, ctx, cmap)
+			}
+		}
 	case *ast.BlockStmt:
 		rc.walk(s.List, code, ctx, cmap)
 	case *ast.IfStmt:
+		// The Init statement (if err := respond(w, v); err != nil)
+		// runs unconditionally before the condition, exactly like a
+		// statement written on the line above — so its effect on the
+		// code in effect flows into the branches *and* to subsequent
+		// siblings.
+		if s.Init != nil {
+			code = rc.walkStmt(s.Init, code, ctx, cmap)
+		}
 		rc.walk(s.Body.List, code, ctx, cmap)
 		if s.Else != nil {
 			rc.walkStmt(s.Else, code, ctx, cmap)
@@ -338,6 +376,18 @@ func (rc *responseCollector) walkStmt(stmt ast.Stmt, code int, ctx *evalCtx, cma
 			rc.walk(s.Body.List, code, ctx, cmap)
 		}
 	case *ast.SwitchStmt:
+		if s.Init != nil {
+			code = rc.walkStmt(s.Init, code, ctx, cmap)
+		}
+		for _, clause := range s.Body.List {
+			if cc, ok := clause.(*ast.CaseClause); ok {
+				rc.walk(cc.Body, code, ctx, cmap)
+			}
+		}
+	case *ast.TypeSwitchStmt:
+		if s.Init != nil {
+			code = rc.walkStmt(s.Init, code, ctx, cmap)
+		}
 		for _, clause := range s.Body.List {
 			if cc, ok := clause.(*ast.CaseClause); ok {
 				rc.walk(cc.Body, code, ctx, cmap)
@@ -365,28 +415,44 @@ func isSkipped(stmt ast.Stmt, cmap ast.CommentMap) bool {
 	return false
 }
 
-// walkCall inspects a single call expression: WriteHeader updates the
-// code in effect for subsequent statements in the same block; Encode,
-// Marshal and http.Error record a response at the code currently in
-// effect (http.Error carries its own explicit code and doesn't change
-// what's "in effect" afterward). A call matching none of those, but
-// resolving to a followable helper (see tryFollow), is walked into with
-// the same code in effect — anything it records lands in this same
-// collector, and "code in effect" for what follows the call site is
-// unaffected by what happened inside (matching real net/http semantics:
-// a helper's own WriteHeader is a terminal write, same as http.Error's
-// explicit code today).
+// walkCall inspects a single call expression, consulting the dialect
+// first: a recognized call applies its responseEffect — recording a
+// response at its explicit code or the code currently in effect, and/or
+// changing the code in effect for subsequent statements in the same
+// block — and is never also followed. A call the dialect doesn't
+// recognize, but resolving to a followable helper (see tryFollow), is
+// walked into with the same code in effect — anything it records lands
+// in this same collector, and "code in effect" for what follows the
+// call site is unaffected by what happened inside (matching real
+// net/http semantics: a helper's own WriteHeader is a terminal write).
+//
+// A recorded effect whose value can't be converted to a schema records
+// nothing when the code was ambient (an Encode at an unknowable-schema
+// value is no evidence a response happened at a knowable code — see
+// RespondViaHelperNilData's rationale in the fixture), but a *bare*
+// response when the code was explicit: the status is statically certain
+// even when the payload isn't (a future c.JSON(404, someInterfaceVar)
+// still documents the 404). For the net/http dialect the distinction is
+// currently unreachable — its only explicit-code effect (http.Error) is
+// always schema-less by design — so this is vocabulary for future
+// dialects, not a behavior change.
 func (rc *responseCollector) walkCall(call *ast.CallExpr, code int, ctx *evalCtx, cmap ast.CommentMap) int {
-	if newCode, ok := writeHeaderCode(call, ctx); ok {
-		return newCode
-	}
-	if errCode, ok := httpErrorCode(call, ctx); ok {
-		rc.record(errCode, nil)
-		return code
-	}
-	if expr, exprCtx, ok := encodeCallType(call, ctx); ok {
-		if schema, ok := valueSchema(expr, exprCtx); ok {
-			rc.record(code, schema)
+	if eff, ok := ctx.dialect.response(call, ctx); ok {
+		if eff.record {
+			effCode := code
+			if eff.code != 0 {
+				effCode = eff.code
+			}
+			if eff.value == nil {
+				rc.record(effCode, nil)
+			} else if schema, ok := valueSchema(eff.value, eff.valueCtx); ok {
+				rc.record(effCode, schema)
+			} else if eff.code != 0 {
+				rc.record(eff.code, nil)
+			}
+		}
+		if eff.ambient > 0 {
+			return eff.ambient
 		}
 		return code
 	}
@@ -410,20 +476,13 @@ func (rc *responseCollector) record(code int, schema *model.Schema) {
 	rc.responses[strconv.Itoa(code)] = resp
 }
 
-// extractCallType recognizes a call expression's shape and, if it
-// matches, returns the expression whose value is being decoded/encoded
-// (not yet resolved through ctx.subst, except decodeCallType's own
-// addressedType, which must resolve to find the "&x" shape in the first
-// place — see its own doc comment) alongside the context it must be
-// interpreted under.
-type extractCallType func(*ast.CallExpr, *evalCtx) (ast.Expr, *evalCtx, bool)
-
 // firstBodySchema returns the schema for the first call in body that
-// extract recognizes and whose value converts via valueSchema. A call
-// not directly recognized, but resolving to a followable helper (see
-// tryFollow), is searched into before moving on — the first match found
-// there (if any) wins, same as anywhere else in source order.
-func firstBodySchema(body ast.Node, ctx *evalCtx, extract extractCallType) (*model.Schema, bool) {
+// the dialect recognizes as a decode and whose target converts via
+// valueSchema. A call not directly recognized, but resolving to a
+// followable helper (see tryFollow), is searched into before moving on
+// — the first match found there (if any) wins, same as anywhere else
+// in source order.
+func firstBodySchema(body ast.Node, ctx *evalCtx) (*model.Schema, bool) {
 	var result *model.Schema
 	ast.Inspect(body, func(n ast.Node) bool {
 		if result != nil {
@@ -433,7 +492,7 @@ func firstBodySchema(body ast.Node, ctx *evalCtx, extract extractCallType) (*mod
 		if !ok {
 			return true
 		}
-		if expr, exprCtx, ok := extract(call, ctx); ok {
+		if expr, exprCtx, ok := ctx.dialect.decodeTarget(call, ctx); ok {
 			if schema, ok := valueSchema(expr, exprCtx); ok {
 				result = schema
 				return false
@@ -441,7 +500,7 @@ func firstBodySchema(body ast.Node, ctx *evalCtx, extract extractCallType) (*mod
 		}
 		if stmts, followCtx, ok := tryFollow(call, ctx); ok {
 			for _, stmt := range stmts {
-				if schema, found := firstBodySchema(stmt, followCtx, extract); found {
+				if schema, found := firstBodySchema(stmt, followCtx); found {
 					result = schema
 					return false
 				}
@@ -450,109 +509,6 @@ func firstBodySchema(body ast.Node, ctx *evalCtx, extract extractCallType) (*mod
 		return true
 	})
 	return result, result != nil
-}
-
-// decodeCallType recognizes "<x>.Decode(&v)" where x has type
-// *encoding/json.Decoder, or "json.Unmarshal(data, &v)", and returns v
-// (via addressedType) alongside the context it must be interpreted under.
-func decodeCallType(call *ast.CallExpr, ctx *evalCtx) (ast.Expr, *evalCtx, bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return nil, nil, false
-	}
-	switch sel.Sel.Name {
-	case "Decode":
-		if len(call.Args) != 1 || !isJSONStreamType(sel.X, ctx.info, "Decoder") {
-			return nil, nil, false
-		}
-		return addressedType(call.Args[0], ctx)
-	case "Unmarshal":
-		if len(call.Args) != 2 || !isPackageIdent(sel.X, ctx.info, "encoding/json") {
-			return nil, nil, false
-		}
-		return addressedType(call.Args[1], ctx)
-	}
-	return nil, nil, false
-}
-
-// encodeCallType recognizes "<x>.Encode(v)" where x has type
-// *encoding/json.Encoder, or "json.Marshal(v)", and returns v
-// unresolved — valueSchema is the sole place that calls resolveExpr, so
-// there's exactly one resolver of record for every path into it.
-func encodeCallType(call *ast.CallExpr, ctx *evalCtx) (ast.Expr, *evalCtx, bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return nil, nil, false
-	}
-	switch sel.Sel.Name {
-	case "Encode":
-		if len(call.Args) != 1 || !isJSONStreamType(sel.X, ctx.info, "Encoder") {
-			return nil, nil, false
-		}
-	case "Marshal":
-		if len(call.Args) != 1 || !isPackageIdent(sel.X, ctx.info, "encoding/json") {
-			return nil, nil, false
-		}
-	default:
-		return nil, nil, false
-	}
-	return call.Args[0], ctx, true
-}
-
-// writeHeaderCode recognizes "<x>.WriteHeader(<constant code>)" where x
-// has type net/http.ResponseWriter, and returns the constant code.
-func writeHeaderCode(call *ast.CallExpr, ctx *evalCtx) (int, bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != "WriteHeader" || len(call.Args) != 1 {
-		return 0, false
-	}
-	if !isHTTPResponseWriter(sel.X, ctx.info) {
-		return 0, false
-	}
-	return constIntArg(call.Args[0], ctx)
-}
-
-// httpErrorCode recognizes "http.Error(w, msg, <constant code>)" and
-// returns the constant code.
-func httpErrorCode(call *ast.CallExpr, ctx *evalCtx) (int, bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != "Error" || len(call.Args) != 3 {
-		return 0, false
-	}
-	if !isPackageIdent(sel.X, ctx.info, "net/http") {
-		return 0, false
-	}
-	return constIntArg(call.Args[2], ctx)
-}
-
-// isHTTPResponseWriter reports whether x's static type is
-// net/http.ResponseWriter. x is always the currently-walked call's own
-// receiver expression, never something resolved through ctx.subst (only
-// value arguments are substituted, never a selector's receiver), so this
-// takes info directly rather than resolving through ctx.
-func isHTTPResponseWriter(x ast.Expr, info *types.Info) bool {
-	t := info.TypeOf(x)
-	return t != nil && t.String() == "net/http.ResponseWriter"
-}
-
-// isJSONStreamType reports whether x's static type is *encoding/json.Decoder
-// or *encoding/json.Encoder (matching typeName), regardless of whether x is
-// the literal "json.NewDecoder(...)" call or a variable holding the result.
-func isJSONStreamType(x ast.Expr, info *types.Info, typeName string) bool {
-	t := info.TypeOf(x)
-	if t == nil {
-		return false
-	}
-	ptr, ok := t.(*types.Pointer)
-	if !ok {
-		return false
-	}
-	named, ok := ptr.Elem().(*types.Named)
-	if !ok {
-		return false
-	}
-	obj := named.Obj()
-	return obj.Pkg() != nil && obj.Pkg().Path() == "encoding/json" && obj.Name() == typeName
 }
 
 // isPackageIdent reports whether x is a reference to the package at path
@@ -660,7 +616,7 @@ func shallowRefSchema(t types.Type) (*model.Schema, bool) {
 
 // valueSchema converts e into a Schema, resolving it through ctx first —
 // the sole resolution point every path into this function relies on
-// (see encodeCallType's doc comment). A map composite literal with every
+// (see encodeCallArg's doc comment). A map composite literal with every
 // key a compile-time string constant (e.g. map[string]any{"status": "ok",
 // "data": x} — a common way to wrap a real payload in an ad-hoc envelope
 // with no named struct at all) gets an inline "object" schema built from

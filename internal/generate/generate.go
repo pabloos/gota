@@ -27,7 +27,20 @@ type Options struct {
 	Dir     string
 	Title   string
 	Version string
-	Plugins []router.Plugin
+	Routers []Router
+}
+
+// Router pairs a router plugin (which framework's route registrations
+// to extract) with the inference dialect recognizing that framework's
+// request/response idioms inside handler bodies. The two are separate
+// axes on purpose: a future Chi plugin pairs with inference.NetHTTP()
+// unchanged (Chi handlers are plain net/http), while a Gin plugin
+// brings its own dialect. A nil Dialect disables body inference for
+// that plugin's routes — they're still documented from the route and
+// any "gota:" comment.
+type Router struct {
+	Plugin  router.Plugin
+	Dialect inference.Dialect
 }
 
 // Run executes the full pipeline against opts.Dir and returns the merged
@@ -52,10 +65,10 @@ func Run(opts Options) (*model.Document, error) {
 	// any comment gets a chance to declare its own explicit operationId.
 	var pending []pendingOperation
 	for _, pkg := range pkgs {
-		for _, plugin := range opts.Plugins {
-			routes, err := plugin.Extract(pkg)
+		for _, rt := range opts.Routers {
+			routes, err := rt.Plugin.Extract(pkg)
 			if err != nil {
-				return nil, fmt.Errorf("generate: plugin %s: %w", plugin.Name(), err)
+				return nil, fmt.Errorf("generate: plugin %s: %w", rt.Plugin.Name(), err)
 			}
 			for _, route := range routes {
 				info := pkg.TypesInfo
@@ -71,7 +84,7 @@ func Run(opts Options) (*model.Document, error) {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
 				inferred := inference.Operation(route)
-				inference.DetectBody(inferred, route.HandlerDecl, info, cmap, globalIndex)
+				inference.DetectBody(inferred, route.HandlerDecl, info, cmap, globalIndex, rt.Dialect)
 				pending = append(pending, pendingOperation{route: route, info: info, cmap: cmap, op: inferred})
 			}
 		}

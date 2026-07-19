@@ -8,7 +8,7 @@ import (
 
 	"github.com/pabloos/gota/internal/emitter"
 	"github.com/pabloos/gota/internal/generate"
-	"github.com/pabloos/gota/internal/router"
+	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/nethttp"
 	"github.com/pabloos/gota/pkg/model"
 )
@@ -23,7 +23,7 @@ func TestRun_NetHTTPBasic(t *testing.T) {
 		Dir:     dir,
 		Title:   "Test API",
 		Version: "1.0.0",
-		Plugins: []router.Plugin{nethttp.New()},
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
 		t.Fatalf("generate.Run: %v", err)
@@ -242,7 +242,7 @@ func TestRun_MarshalRoundTrip(t *testing.T) {
 	}
 	doc, err := generate.Run(generate.Options{
 		Dir: dir, Title: "T", Version: "1.0.0",
-		Plugins: []router.Plugin{nethttp.New()},
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
 		t.Fatalf("generate.Run: %v", err)
@@ -286,7 +286,7 @@ func TestRun_CrossPackageHandler(t *testing.T) {
 		Dir:     dir,
 		Title:   "Test API",
 		Version: "1.0.0",
-		Plugins: []router.Plugin{nethttp.New()},
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
 		t.Fatalf("generate.Run: %v", err)
@@ -329,7 +329,7 @@ func TestRun_GenericResponses(t *testing.T) {
 		Dir:     dir,
 		Title:   "Test API",
 		Version: "1.0.0",
-		Plugins: []router.Plugin{nethttp.New()},
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
 		t.Fatalf("generate.Run: %v", err)
@@ -378,7 +378,7 @@ func TestRun_OperationIDDisambiguation(t *testing.T) {
 		Dir:     dir,
 		Title:   "Test API",
 		Version: "1.0.0",
-		Plugins: []router.Plugin{nethttp.New()},
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
 		t.Fatalf("generate.Run: %v (operationId collisions must be disambiguated, not left to fail validation)", err)

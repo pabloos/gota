@@ -255,6 +255,75 @@ func DecodeViaHelper(w http.ResponseWriter, r *http.Request) {
 	decodeJSON(r, &u)
 }
 
+// respondErr writes the whole response in return position — the shape
+// of every error-returning response helper, and (once inside a real
+// framework) the entire idiom of e.g. Echo. The WriteHeader before it
+// must still apply: the ambient code is frame-local state, and the
+// return-position Encode is just the last statement to see it.
+func respondErr(w http.ResponseWriter, v any) error {
+	w.WriteHeader(http.StatusBadRequest)
+	return json.NewEncoder(w).Encode(v)
+}
+
+func RespondViaReturnHelper(w http.ResponseWriter, r *http.Request) {
+	respondErr(w, ErrorResponse{Message: "bad"})
+}
+
+// encodeJSON returns its Encode error, so callers can use it in an
+// if-Init position.
+func encodeJSON(w http.ResponseWriter, v any) error {
+	return json.NewEncoder(w).Encode(v)
+}
+
+// IfInitHelperCall exercises the "if err := helper(...); err != nil"
+// shape: the Init call runs unconditionally, so its 200 User response
+// must be detected alongside the error branch's 500.
+func IfInitHelperCall(w http.ResponseWriter, r *http.Request) {
+	if err := encodeJSON(w, User{ID: 1}); err != nil {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}
+}
+
+// SwitchInitHelperCall is the switch-flavored sibling of
+// IfInitHelperCall.
+func SwitchInitHelperCall(w http.ResponseWriter, r *http.Request) {
+	switch err := encodeJSON(w, User{ID: 1}); err {
+	case nil:
+	default:
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}
+}
+
+// TypeSwitchResponses writes different responses per dynamic type —
+// same CaseClause walking as a plain switch, previously invisible.
+func TypeSwitchResponses(w http.ResponseWriter, r *http.Request) {
+	var v any = User{}
+	switch v.(type) {
+	case User:
+		json.NewEncoder(w).Encode(User{})
+	default:
+		http.Error(w, "unknown", http.StatusBadRequest)
+	}
+}
+
+// server carries a response helper as a method — a very common
+// real-world shape (handlers hang off a server/handler struct and
+// share its respond method). Method calls resolve through info.Uses
+// exactly like function calls (go/types records the selected method
+// object there too, not only in Selections), so s.respond is followed
+// the same as a free function: the receiver isn't a parameter, and the
+// plain arguments bind positionally.
+type server struct{}
+
+func (s *server) respond(w http.ResponseWriter, code int, data any) {
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(data)
+}
+
+func (s *server) CreateViaMethod(w http.ResponseWriter, r *http.Request) {
+	s.respond(w, http.StatusCreated, User{ID: 1})
+}
+
 // EncodeMapLiteralResponse mirrors a real, common pattern found in
 // production Go APIs: wrapping the real payload in an ad-hoc envelope
 // via a map literal directly at the call site, instead of a named

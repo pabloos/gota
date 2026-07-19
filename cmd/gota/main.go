@@ -12,7 +12,7 @@ import (
 
 	"github.com/pabloos/gota/internal/emitter"
 	"github.com/pabloos/gota/internal/generate"
-	"github.com/pabloos/gota/internal/router"
+	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/nethttp"
 )
 
@@ -82,7 +82,7 @@ func run(args []string) error {
 		Dir:     cfg.Dir,
 		Title:   cfg.Title,
 		Version: cfg.Version,
-		Plugins: []router.Plugin{nethttp.New()},
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
 		return err
