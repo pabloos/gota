@@ -13,6 +13,7 @@ import (
 	"github.com/pabloos/gota/internal/emitter"
 	"github.com/pabloos/gota/internal/generate"
 	"github.com/pabloos/gota/internal/inference"
+	"github.com/pabloos/gota/internal/router/chi"
 	"github.com/pabloos/gota/internal/router/nethttp"
 )
 
@@ -82,7 +83,15 @@ func run(args []string) error {
 		Dir:     cfg.Dir,
 		Title:   cfg.Title,
 		Version: cfg.Version,
-		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
+		// Every configured plugin runs against every loaded package
+		// regardless of which framework it's actually written with — one
+		// whose framework isn't present in a given package just returns no
+		// routes for it, so both run unconditionally rather than needing a
+		// --router flag to pick one.
+		Routers: []generate.Router{
+			{Plugin: nethttp.New(), Dialect: inference.NetHTTP()},
+			{Plugin: chi.New(), Dialect: inference.NetHTTP()},
+		},
 	})
 	if err != nil {
 		return err

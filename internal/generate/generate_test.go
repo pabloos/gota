@@ -9,6 +9,7 @@ import (
 	"github.com/pabloos/gota/internal/emitter"
 	"github.com/pabloos/gota/internal/generate"
 	"github.com/pabloos/gota/internal/inference"
+	"github.com/pabloos/gota/internal/router/chi"
 	"github.com/pabloos/gota/internal/router/nethttp"
 	"github.com/pabloos/gota/pkg/model"
 )
@@ -62,6 +63,57 @@ func TestRun_NetHTTPBasic(t *testing.T) {
 	}
 	assertListUsers(t, users.Get)
 	assertCreateUser(t, users.Post)
+
+	assertUserComponent(t, doc)
+}
+
+// TestRun_ChiBasic mirrors TestRun_NetHTTPBasic against a chi-routed
+// fixture (testdata/chi-basic, a separate Go module -- see its own
+// go.mod) -- same handler content, proving the pipeline end-to-end on
+// chi's structural difference from net/http's flat ServeMux: nested
+// Route accumulates a path prefix and a same-package Mount constructor
+// is followed, both reaching all the way through generate.Run, not
+// just the plugin's own unit tests.
+func TestRun_ChiBasic(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/chi-basic")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: chi.New(), Dialect: inference.NetHTTP()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+
+	if _, ok := doc.Paths["/debug/info"]; ok {
+		t.Errorf("doc.Paths contains /debug/info, want it excluded by x-gota-skip")
+	}
+
+	usersByID, ok := doc.Paths["/users/{id}"]
+	if !ok {
+		t.Fatalf("missing /users/{id}")
+	}
+	assertGetUser(t, usersByID.Get)
+	assertDeleteUser(t, usersByID.Delete)
+
+	users, ok := doc.Paths["/users"]
+	if !ok {
+		t.Fatalf("missing /users")
+	}
+	assertListUsers(t, users.Get)
+	assertCreateUser(t, users.Post)
+
+	if _, ok := doc.Paths["/orders/"]; !ok {
+		t.Errorf("doc.Paths = %+v, missing /orders/ (nested Route prefix should reach the full pipeline)", doc.Paths)
+	}
+	if _, ok := doc.Paths["/products/"]; !ok {
+		t.Errorf("doc.Paths = %+v, missing /products/ (same-package Mount should reach the full pipeline)", doc.Paths)
+	}
 
 	assertUserComponent(t, doc)
 }

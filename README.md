@@ -38,7 +38,28 @@ func GetUser(w http.ResponseWriter, r *http.Request) { ... }
 
 ## Status
 
-`net/http` is the only supported router, using Go 1.22+'s enhanced
+`net/http` and [Chi](https://github.com/go-chi/chi) are supported
+routers — both plugins run unconditionally against every analyzed
+package (no flag needed to pick one; a plugin whose framework isn't
+present just contributes no routes) and share the same net/http-based
+body inference, since Chi handlers are plain
+`func(w http.ResponseWriter, r *http.Request)` with no response-writing
+idiom of their own.
+
+Chi's `Route`/`Group` nesting is followed to arbitrary depth,
+accumulating the real path prefix (`r.Route("/users", func(r
+chi.Router) { r.Get("/{id}", H) })` → `/users/{id}`). `Mount` is
+followed for the common same-package, zero-argument constructor
+function idiom (`func productsRouter() chi.Router {...}` /
+`mx.Mount("/products", productsRouter())`) — a constructor declared in
+a *different* package can't be resolved (route extraction only ever
+sees one package at a time), and is left undetected rather than
+guessed. A chi-specific regex-constrained param (`{id:[0-9]+}`)
+degrades to a bare `{id}` (no direct OpenAPI equivalent); a bare
+wildcard segment (`/admin/*`) has no OpenAPI path-template equivalent
+at all and that registration is declined entirely.
+
+`net/http` is the reference router, using Go 1.22+'s enhanced
 `ServeMux` patterns (`"GET /users/{id}"`). A pattern with no method
 (`mux.HandleFunc("/health", HealthCheck)`) matches every method per
 net/http's own `ServeMux` docs, so gota expands it into one operation per
@@ -181,7 +202,9 @@ generic name by itself (`$ref: '#/components/schemas/Response'`, with no
 instantiation specified) all fall back to today's behavior rather than
 being newly resolved.
 
-Other router plugins — Chi, Gin — are not implemented yet.
+Other router plugins — Gin, Echo — are not implemented yet; unlike Chi,
+they'd also need their own `inference.Dialect` (see the body inference
+paragraph above), not just a router plugin.
 
 ## Usage
 
@@ -348,25 +371,31 @@ Core engine — everything router-agnostic:
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
-router's API (only `net/http` exists today; this table's shape is meant
-to scale as Chi/Gin plugins get added):
+router's API:
 
-| Feature                                    | `net/http` |
-|----------------------------------------------|:----------:|
-| Route extraction (method + path, incl. path params) | ✅ |
-| Method-less pattern → expands to every HTTP method | ✅ |
-| Handler resolution: bare identifier            | ✅ |
-| Handler resolution: method value (bound method) | ✅ |
-| Handler resolution: cross-package reference    | ✅ |
-| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ |
+| Feature                                    | `net/http` | Chi |
+|----------------------------------------------|:----------:|:---:|
+| Route extraction (method + path, incl. path params) | ✅ | ✅ |
+| Method-less pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) |
+| Handler resolution: bare identifier            | ✅ | ✅ |
+| Handler resolution: method value (bound method) | ✅ | ✅ |
+| Handler resolution: cross-package reference    | ✅ | ✅ |
+| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) |
+| Nested path-prefix routing (`Route`/`Group`)   | n/a | ✅, arbitrary depth |
+| `Mount`-ed sub-router                          | n/a | same-package, zero-arg constructor function only |
 
-Tests: `internal/router/nethttp/nethttp_test.go`. Cross-package
-resolution itself is plugin-agnostic (`internal/astutil`, exercised
-end-to-end in `internal/generate/generate_test.go`) — any future plugin
-gets it for free by populating `Route.HandlerObj` the same way.
+Tests: `internal/router/nethttp/nethttp_test.go`,
+`internal/router/chi/chi_test.go` (fixture at
+`internal/router/chi/testdata/routes`, its own Go module — chi is a
+test-only dependency, isolated so it never bumps gota's own `go.mod`
+floor; same reasoning for `testdata/chi-basic`, used by
+`TestRun_ChiBasic`). Cross-package resolution itself is plugin-agnostic
+(`internal/astutil`, exercised end-to-end in
+`internal/generate/generate_test.go`) — any future plugin gets it for
+free by populating `Route.HandlerObj` the same way.
 
 Optional local git hooks (`.githooks/`) mirror the CI checks so failures
 show up before you even push: `pre-commit` runs `gofmt` only (fast, every
@@ -381,8 +410,8 @@ git config core.hooksPath .githooks
 ## Contributing
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
-dev setup and a list of concrete, well-scoped starting points (a Chi/Gin
-router plugin, generics support, cross-package handler resolution).
+dev setup and a list of concrete, well-scoped starting points (a Gin or
+Echo router plugin + dialect, cross-package `Mount` resolution).
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

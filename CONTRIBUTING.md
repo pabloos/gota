@@ -19,6 +19,12 @@ go build ./...
 go test ./...
 ```
 
+`go test ./...` will fetch `github.com/go-chi/chi/v5` on first run (a
+test-only fixture dependency, isolated in its own nested `go.mod` so it
+never bumps gota's own build floor — see `internal/router/chi`'s
+package doc comment) — the one time this repo needs network access to
+run its normal test suite.
+
 Try the CLI against the bundled fixture:
 
 ```sh
@@ -80,14 +86,25 @@ matching them keeps a PR reviewable as a diff rather than a rewrite:
 These are real, currently-unaddressed gaps — each documented in the
 README's [Status](README.md#status) section, not secret TODOs:
 
-- **Chi or Gin router plugin.** `internal/router/nethttp` is the
-  reference implementation of the `router.Plugin` interface
-  (`internal/router/plugin.go`) — a new plugin needs the same route
-  (method, path, handler) extraction for a different router's API.
-  Cross-package handler resolution comes for free: populate
-  `Route.HandlerObj` the way `internal/router/nethttp` does, and
-  `internal/generate` traces it via `internal/astutil` regardless of
-  which plugin found it.
+- **Gin or Echo router plugin + `inference.Dialect`.** `internal/router/nethttp`
+  and `internal/router/chi` are both reference `router.Plugin`
+  implementations (`internal/router/plugin.go`) — a new plugin needs
+  the same route (method, path, handler) extraction for a different
+  router's API. Cross-package handler resolution comes for free:
+  populate `Route.HandlerObj` the way they do, and `internal/generate`
+  traces it via `internal/astutil` regardless of which plugin found it.
+  Unlike Chi (plain net/http handlers, reuses `inference.NetHTTP()`
+  unchanged), Gin/Echo also need their own `inference.Dialect`
+  (`internal/inference/dialect.go`) — see `dialect_nethttp.go` as the
+  reference and `dialect_test.go`'s fake-dialect test for the shape a
+  new one must satisfy.
+- **Cross-package `Mount` resolution.** `internal/router/chi` only
+  follows `Mount(prefix, ctor())` when `ctor` is declared in the same
+  package as the `Mount` call — `Plugin.Extract` only ever sees one
+  package at a time, so a constructor split into a different package
+  (the common way large real Chi APIs are structured) isn't resolved.
+  Would need `Extract`'s single-package scope to somehow reach another
+  package's declaration, or a design change to how plugins are invoked.
 
 Opening an issue to discuss approach before a large PR is welcome but not
 required for small, well-contained changes.
