@@ -98,11 +98,11 @@ import (
 // decl's own body — a "gota:" comment inside a followed helper's body
 // has no effect (cmap is built from decl's own file, and a shared
 // helper has no single caller to scope a skip to anyway).
-func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo, d Dialect) {
+func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo, d Dialect, ambiguous map[string]bool) {
 	if op == nil || decl == nil || decl.Body == nil || info == nil || d == nil {
 		return
 	}
-	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}, dialect: d}
+	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}, dialect: d, ambiguous: ambiguous}
 
 	if schema, ok := firstBodySchema(decl.Body, ctx); ok {
 		op.RequestBody = &model.RequestBody{
@@ -148,6 +148,7 @@ type evalCtx struct {
 	depth     int                   // 0 at the top level, incremented by one per follow
 	visiting  map[types.Object]bool // every helper already in the current follow chain, for cycle detection
 	dialect   Dialect               // the recognizer set in effect, constant across the whole walk (followed frames inherit it)
+	ambiguous map[string]bool       // schema names to package-qualify (see AmbiguousSchemaNames), constant across the walk
 }
 
 // boundExpr is a followed helper's parameter binding: the expression
@@ -230,6 +231,7 @@ func tryFollow(call *ast.CallExpr, ctx *evalCtx) (stmts []ast.Stmt, newCtx *eval
 		depth:     ctx.depth + 1,
 		visiting:  visiting,
 		dialect:   ctx.dialect,
+		ambiguous: ctx.ambiguous,
 	}, true
 }
 
@@ -571,23 +573,23 @@ func constIntArg(e ast.Expr, ctx *evalCtx) (int, bool) {
 // reports false, except when it's a map's *element* type: see the Map
 // case below for why that specific failure degrades instead of
 // propagating.
-func shallowRefSchema(t types.Type) (*model.Schema, bool) {
+func shallowRefSchema(t types.Type, ambiguous map[string]bool) (*model.Schema, bool) {
 	switch tt := t.(type) {
 	case *types.Pointer:
-		return shallowRefSchema(tt.Elem())
+		return shallowRefSchema(tt.Elem(), ambiguous)
 	case *types.Named:
 		if _, isStruct := tt.Underlying().(*types.Struct); !isStruct {
 			return nil, false
 		}
-		return &model.Schema{Ref: schemaRefPrefix + componentName(tt)}, true
+		return &model.Schema{Ref: schemaRefPrefix + componentName(tt, ambiguous)}, true
 	case *types.Slice:
-		item, ok := shallowRefSchema(tt.Elem())
+		item, ok := shallowRefSchema(tt.Elem(), ambiguous)
 		if !ok {
 			return nil, false
 		}
 		return &model.Schema{Type: "array", Items: item}, true
 	case *types.Array:
-		item, ok := shallowRefSchema(tt.Elem())
+		item, ok := shallowRefSchema(tt.Elem(), ambiguous)
 		if !ok {
 			return nil, false
 		}
@@ -603,7 +605,7 @@ func shallowRefSchema(t types.Type) (*model.Schema, bool) {
 		// (schemaForType) never fails here either, so propagating this
 		// one failure would make gota worse at exactly the case that
 		// motivated adding Map support in the first place.
-		elem, _ := shallowRefSchema(tt.Elem())
+		elem, _ := shallowRefSchema(tt.Elem(), ambiguous)
 		return &model.Schema{Type: "object", AdditionalProperties: elem}, true
 	case *types.Basic:
 		if tt.Kind() == types.UntypedNil || tt.Kind() == types.Invalid {
@@ -634,7 +636,7 @@ func valueSchema(e ast.Expr, ctx *evalCtx) (*model.Schema, bool) {
 	if t == nil {
 		return nil, false
 	}
-	return shallowRefSchema(t)
+	return shallowRefSchema(t, ctx.ambiguous)
 }
 
 // mapLiteralSchema converts lit, a map composite literal, into an inline

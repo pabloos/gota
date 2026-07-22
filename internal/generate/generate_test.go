@@ -118,6 +118,63 @@ func TestRun_ChiBasic(t *testing.T) {
 	assertUserComponent(t, doc)
 }
 
+// TestRun_SchemaNameCollision is the real-world regression guard for the
+// gmhafiz/go8 gap: two handler packages each declare their own Widget
+// and infer $refs to it. Before package-qualified disambiguation this
+// failed outright ("schema name ... is ambiguous"); now both must
+// resolve to distinct author.Widget / book.Widget components AND the
+// whole document must pass emitter.Validate — proving kin-openapi
+// accepts the "." component key and resolves the qualified $ref
+// end-to-end.
+func TestRun_SchemaNameCollision(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/schema-collision")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v (the two-package Widget collision should now disambiguate, not error)", err)
+	}
+
+	if err := emitter.Validate(doc); err != nil {
+		t.Fatalf("emitter.Validate: %v — a package-qualified '.' component key must validate and its $ref resolve", err)
+	}
+
+	if doc.Components == nil {
+		t.Fatal("Components is nil, want author.Widget and book.Widget")
+	}
+	authorW, ok := doc.Components.Schemas["author.Widget"]
+	if !ok {
+		t.Fatalf("Components.Schemas = %+v, missing author.Widget", doc.Components.Schemas)
+	}
+	if _, ok := authorW.Properties["author_field"]; !ok {
+		t.Errorf("author.Widget = %+v, want package author's Widget (author_field)", authorW)
+	}
+	bookW, ok := doc.Components.Schemas["book.Widget"]
+	if !ok {
+		t.Fatalf("Components.Schemas = %+v, missing book.Widget", doc.Components.Schemas)
+	}
+	if _, ok := bookW.Properties["book_field"]; !ok {
+		t.Errorf("book.Widget = %+v, want package book's Widget (book_field)", bookW)
+	}
+
+	// The inferred request/response $refs on the operations must point at
+	// the qualified component keys, not a bare "Widget".
+	post := doc.Paths["/author/widgets"].Post
+	if post == nil || post.RequestBody == nil {
+		t.Fatalf("POST /author/widgets = %+v, want an inferred request body", post)
+	}
+	if ref := post.RequestBody.Content["application/json"].Schema.Ref; ref != "#/components/schemas/author.Widget" {
+		t.Errorf("request body $ref = %q, want #/components/schemas/author.Widget", ref)
+	}
+}
+
 // assertUserComponent checks that the $ref declared in GetUser/CreateUser's
 // "gota:" comments resolved to a real components.schemas.User entry
 // generated from the testdata/nethttp-basic User struct — not just parsed

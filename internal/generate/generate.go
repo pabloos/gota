@@ -59,6 +59,13 @@ func Run(opts Options) (*model.Document, error) {
 	// this covers every loaded package instead.
 	globalIndex := astutil.IndexFuncDecls(pkgs)
 
+	// ambiguous is the set of type names declared in more than one
+	// analyzed package. Body inference (below) and ResolveSchemaRefs
+	// (further down) must be handed the SAME set so an inferred $ref
+	// package-qualifies exactly the names its later component key does —
+	// see inference.AmbiguousSchemaNames.
+	ambiguous := inference.AmbiguousSchemaNames(pkgs)
+
 	// pending holds every route's inferred (not yet merged with any
 	// "gota:" comment) Operation, so operationIDs can be disambiguated
 	// across the whole document — see disambiguateOperationIDs — before
@@ -84,7 +91,7 @@ func Run(opts Options) (*model.Document, error) {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
 				inferred := inference.Operation(route)
-				inference.DetectBody(inferred, route.HandlerDecl, info, cmap, globalIndex, rt.Dialect)
+				inference.DetectBody(inferred, route.HandlerDecl, info, cmap, globalIndex, rt.Dialect, ambiguous)
 				pending = append(pending, pendingOperation{route: route, info: info, cmap: cmap, op: inferred})
 			}
 		}
@@ -121,7 +128,7 @@ func Run(opts Options) (*model.Document, error) {
 		return nil, err
 	}
 
-	if err := inference.ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := inference.ResolveSchemaRefs(doc, pkgs, ambiguous); err != nil {
 		return nil, err
 	}
 

@@ -13,21 +13,30 @@ import (
 
 const schemaRefPrefix = "#/components/schemas/"
 
-// ResolveSchemaRefs finds every "$ref: '#/components/schemas/<Name>'" a
-// "gota:" comment declared anywhere in doc, and generates the referenced
-// component by looking up a Go type named <Name> in pkgs and converting
-// its structure into an OpenAPI Schema (fields, primitive types,
-// omitempty -> required/optional, time.Time, slices, maps, embedding).
-// Nested named struct types discovered along the way are registered as
-// their own linked components rather than inlined, so the type graph in
-// Go becomes a $ref graph in the spec.
+// ResolveSchemaRefs finds every "$ref: '#/components/schemas/<Name>'"
+// declared anywhere in doc (whether written by a "gota:" comment or
+// produced by body inference), and generates the referenced component
+// by looking up the matching Go type in pkgs and converting its
+// structure into an OpenAPI Schema (fields, primitive types, omitempty
+// -> required/optional, time.Time, slices, maps, embedding). Nested
+// named struct types discovered along the way are registered as their
+// own linked components rather than inlined, so the type graph in Go
+// becomes a $ref graph in the spec.
 //
-// It returns an error if a comment references a schema name with no
-// matching Go type anywhere in pkgs, or if that name is declared in more
-// than one analyzed package (gota has no syntax to disambiguate which one
-// was meant, so it refuses to guess). It does not attempt any inference
-// for operations that never declare a $ref.
-func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package) error {
+// ambiguous is the set of type names declared in more than one analyzed
+// package (see AmbiguousSchemaNames); it must be the SAME set the
+// inference-time producers used, so that a package-qualified $ref they
+// emitted (e.g. "author.UpdateRequest") is looked up and stored under
+// the identical component key.
+//
+// It returns an error if a $ref names a schema with no matching Go type
+// anywhere in pkgs; if a HAND-WRITTEN comment references a bare name
+// that's declared in more than one package (gota can't tell which was
+// meant — an inferred $ref for such a name is pre-qualified and doesn't
+// hit this); or if two distinct types would collide on one component
+// key even after qualification (see register). It does not attempt any
+// inference for operations that never declare a $ref.
+func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous map[string]bool) error {
 	names := map[string]bool{}
 	for _, item := range doc.Paths {
 		for _, op := range item.Operations() {
@@ -42,11 +51,14 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package) error {
 		return nil
 	}
 
-	reg := &registry{schemas: map[string]*model.Schema{}}
+	reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous}
 	for name := range names {
 		if err := reg.resolveByName(name, pkgs); err != nil {
 			return err
 		}
+	}
+	if reg.err != nil {
+		return reg.err
 	}
 
 	if doc.Components == nil {
@@ -59,6 +71,39 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package) error {
 		doc.Components.Schemas[name] = s
 	}
 	return nil
+}
+
+// AmbiguousSchemaNames returns the set of top-level type names declared
+// in more than one of pkgs. componentName qualifies exactly these with
+// their package name (e.g. "author.UpdateRequest") so two distinct Go
+// types sharing a name don't collide on one OpenAPI component. It's
+// computed once and threaded to every schema-name producer (body
+// inference and this package's registry) so the emitted $ref string and
+// the stored component key always agree.
+func AmbiguousSchemaNames(pkgs []*packages.Package) map[string]bool {
+	counts := map[string]int{}
+	for _, pkg := range pkgs {
+		if pkg.Types == nil {
+			continue
+		}
+		scope := pkg.Types.Scope()
+		for _, n := range scope.Names() {
+			tn, ok := scope.Lookup(n).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			if _, ok := tn.Type().(*types.Named); ok {
+				counts[n]++
+			}
+		}
+	}
+	ambiguous := map[string]bool{}
+	for n, c := range counts {
+		if c > 1 {
+			ambiguous[n] = true
+		}
+	}
+	return ambiguous
 }
 
 func refName(ref string) (string, bool) {
@@ -110,6 +155,9 @@ func walkSchema(s *model.Schema, visit func(*model.Schema)) {
 type registry struct {
 	schemas    map[string]*model.Schema
 	inProgress map[string]bool
+	ambiguous  map[string]bool   // names to package-qualify, see AmbiguousSchemaNames
+	origin     map[string]string // component key -> the package path that produced it, for the collision guard
+	err        error             // first residual-collision error (two distinct types on one key), checked by ResolveSchemaRefs
 }
 
 // resolveByName is the $ref entry point: name comes from a "$ref:
@@ -134,40 +182,73 @@ func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 // name, or — for a generic type instantiated with exactly one
 // named-struct type argument (Response[User]) — a synthesized
 // "<Generic>_<Arg>" name, so distinct instantiations of the same generic
-// don't collide on one component. Anything else (no instantiation, 2+
-// type parameters, or a non-named type argument) falls back to the bare
-// declared name.
-func componentName(named *types.Named) string {
+// don't collide on one component. When the declared name is in ambiguous
+// (declared in more than one analyzed package), the result is prefixed
+// with the package name and a "." separator ("author.UpdateRequest",
+// "author.Response_User") so two packages' same-named types don't
+// collide. "." is chosen to never clash with the generics "_": a
+// qualified name has exactly one ".", split cleanly on the first one by
+// the resolver (lookupPackageQualifiedType). Keying the check on the
+// bare declared name (not the "_"-composed one) is what makes a
+// colliding generic BASE qualify.
+func componentName(named *types.Named, ambiguous map[string]bool) string {
 	base := named.Obj().Name()
-	targs := named.TypeArgs()
-	if targs == nil || targs.Len() != 1 {
-		return base
+	name := base
+	if targs := named.TypeArgs(); targs != nil && targs.Len() == 1 {
+		if argNamed, ok := targs.At(0).(*types.Named); ok {
+			name = base + "_" + argNamed.Obj().Name()
+		}
 	}
-	argNamed, ok := targs.At(0).(*types.Named)
-	if !ok {
-		return base
+	if ambiguous[base] {
+		if pkg := named.Obj().Pkg(); pkg != nil {
+			return pkg.Name() + "." + name
+		}
 	}
-	return base + "_" + argNamed.Obj().Name()
+	return name
 }
 
-// register ensures named's schema is generated and stored under its own
-// name, recursively registering any named struct types its fields
-// reference, and returns a $ref schema pointing to it. It's safe to call
-// repeatedly (idempotent) and safe against reference cycles.
+// pkgPathOf returns named's declaring package import path (unique across
+// the whole load), or "" for a package-less type. Used as the origin
+// key for register's collision guard.
+func pkgPathOf(named *types.Named) string {
+	if pkg := named.Obj().Pkg(); pkg != nil {
+		return pkg.Path()
+	}
+	return ""
+}
+
+// register ensures named's schema is generated and stored under its
+// component name, recursively registering any named struct types its
+// fields reference, and returns a $ref schema pointing to it. It's safe
+// to call repeatedly (idempotent) and safe against reference cycles.
+//
+// If a DIFFERENT type (a different declaring package) has already
+// claimed the same component name — two types that even
+// package-qualification can't tell apart, e.g. two packages that share
+// a name AND declare the same type name — it records the first such
+// collision on r.err and does NOT overwrite, so the loud error surfaces
+// via ResolveSchemaRefs rather than silently dropping one type's schema.
 func (r *registry) register(named *types.Named) *model.Schema {
-	name := componentName(named)
+	name := componentName(named, r.ambiguous)
 	ref := &model.Schema{Ref: schemaRefPrefix + name}
 
-	if _, done := r.schemas[name]; done {
-		return ref
+	path := pkgPathOf(named)
+	if prev, seen := r.origin[name]; seen {
+		if prev != path && r.err == nil {
+			r.err = fmt.Errorf(
+				"gota: schema component %q is produced by two distinct types (declared in %s and %s) that package-qualification can't tell apart — rename one of them",
+				name, prev, path,
+			)
+		}
+		return ref // same origin: idempotent (done or mid-cycle); different: error recorded, don't overwrite
 	}
-	if r.inProgress[name] {
-		return ref
+	if r.origin == nil {
+		r.origin = map[string]string{}
 	}
 	if r.inProgress == nil {
 		r.inProgress = map[string]bool{}
 	}
-
+	r.origin[name] = path
 	r.inProgress[name] = true
 	s := r.schemaForType(named.Underlying())
 	delete(r.inProgress, name)
@@ -329,13 +410,19 @@ func isTimeTime(named *types.Named) bool {
 	return pkg != nil && pkg.Path() == "time" && obj.Name() == "Time"
 }
 
-// lookupType resolves a $ref name to a Go type: name itself first
-// (lookupTypeByName), and — only on a miss — as a possible
-// componentName-convention generic instantiation ("<Generic>_<Arg>", see
-// lookupInstantiatedType). Trying the direct lookup first means an
-// actual Go type that just happens to have an underscore in its name is
-// never shadowed by the generics convention.
+// lookupType resolves a $ref name to a Go type. A name containing a "."
+// is a package-qualified componentName ("author.UpdateRequest", see
+// lookupPackageQualifiedType) — the shape body inference emits for a
+// type whose bare name collides across packages. Otherwise the bare
+// name is tried first (lookupTypeByName) and, only on a miss, as a
+// possible "<Generic>_<Arg>" generic instantiation (lookupInstantiatedType).
+// Trying the direct lookup before the generic convention means an actual
+// Go type that just happens to have an underscore in its name is never
+// shadowed.
 func lookupType(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+	if i := strings.IndexByte(name, '.'); i > 0 && i < len(name)-1 {
+		return lookupPackageQualifiedType(name[:i], name[i+1:], pkgs)
+	}
 	named, found, err = lookupTypeByName(name, pkgs)
 	if found || err != nil {
 		return named, found, err
@@ -343,30 +430,29 @@ func lookupType(name string, pkgs []*packages.Package) (named *types.Named, foun
 	return lookupInstantiatedType(name, pkgs)
 }
 
-// lookupTypeByName searches every package in pkgs for a top-level type
-// named name. err is non-nil only when name is declared in more than one
-// package — found is false (with no error) when it's declared in none.
-func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+// lookupPackageQualifiedType resolves a "<pkgName>.<rest>" component name
+// back to its type: it finds the analyzed package whose name is pkgName
+// and resolves rest within that package — a bare type, or a
+// "<Base>_<Arg>" generic whose base is scoped to that package (the arg
+// stays looked up globally, the same package-blind limit the generics
+// convention already has). More than one analyzed package can share a
+// name; if rest resolves in two of them, that's a residual collision the
+// qualification couldn't break, and it errors rather than guessing.
+func lookupPackageQualifiedType(pkgName, rest string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
 	var matches []*types.Named
 	var pkgPaths []string
 	for _, pkg := range pkgs {
-		if pkg.Types == nil {
+		if pkg.Types == nil || pkg.Types.Name() != pkgName {
 			continue
 		}
-		obj := pkg.Types.Scope().Lookup(name)
-		if obj == nil {
-			continue
+		n, ok, err := resolveWithinPackage(pkg, rest, pkgs)
+		if err != nil {
+			return nil, false, err
 		}
-		tn, ok := obj.(*types.TypeName)
-		if !ok {
-			continue
+		if ok {
+			matches = append(matches, n)
+			pkgPaths = append(pkgPaths, pkg.PkgPath)
 		}
-		n, ok := tn.Type().(*types.Named)
-		if !ok {
-			continue
-		}
-		matches = append(matches, n)
-		pkgPaths = append(pkgPaths, pkg.PkgPath)
 	}
 	switch len(matches) {
 	case 0:
@@ -375,8 +461,85 @@ func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named
 		return matches[0], true, nil
 	default:
 		return nil, false, fmt.Errorf(
-			"gota: schema name %q is ambiguous: a type named %q is declared in more than one analyzed package (%s) — rename one of them so the $ref is unambiguous",
-			name, name, strings.Join(pkgPaths, ", "),
+			"gota: schema name %q is ambiguous: %q resolves in more than one package named %q (%s) — rename one of them",
+			pkgName+"."+rest, rest, pkgName, strings.Join(pkgPaths, ", "),
+		)
+	}
+}
+
+// resolveWithinPackage resolves rest against a single package: a bare
+// top-level type, or a "<Base>_<Arg>" generic whose base is that
+// package's own generic type (arg looked up globally, matching
+// lookupInstantiatedType). Mirrors lookupType's bare-then-generic
+// ordering so a real type literally named "<Base>_<Arg>" isn't shadowed.
+func resolveWithinPackage(pkg *packages.Package, rest string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+	if n, ok := namedInScope(pkg, rest); ok {
+		return n, true, nil
+	}
+	idx := strings.IndexByte(rest, '_')
+	if idx <= 0 || idx == len(rest)-1 {
+		return nil, false, nil
+	}
+	base, ok := namedInScope(pkg, rest[:idx])
+	if !ok || base.TypeParams() == nil || base.TypeParams().Len() != 1 {
+		return nil, false, nil
+	}
+	arg, found, err := lookupTypeByName(rest[idx+1:], pkgs)
+	if err != nil || !found {
+		return nil, false, err
+	}
+	inst, err := types.Instantiate(nil, base, []types.Type{arg}, true)
+	if err != nil {
+		return nil, false, fmt.Errorf("gota: instantiating generic type %q with %q: %w", rest[:idx], rest[idx+1:], err)
+	}
+	instNamed, ok := inst.(*types.Named)
+	if !ok {
+		return nil, false, nil
+	}
+	return instNamed, true, nil
+}
+
+// namedInScope looks up a top-level *types.Named in one package's scope.
+func namedInScope(pkg *packages.Package, name string) (*types.Named, bool) {
+	tn, ok := pkg.Types.Scope().Lookup(name).(*types.TypeName)
+	if !ok {
+		return nil, false
+	}
+	n, ok := tn.Type().(*types.Named)
+	return n, ok
+}
+
+// lookupTypeByName searches every package in pkgs for a top-level type
+// named name. err is non-nil only when name is declared in more than one
+// package — found is false (with no error) when it's declared in none.
+// A name that IS ambiguous only reaches here from a hand-written "gota:"
+// comment $ref (an inferred $ref for such a name is package-qualified,
+// taking lookupPackageQualifiedType instead), so the error suggests the
+// qualified forms the author can use.
+func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
+	var matches []*types.Named
+	var pkgPaths, qualified []string
+	for _, pkg := range pkgs {
+		if pkg.Types == nil {
+			continue
+		}
+		n, ok := namedInScope(pkg, name)
+		if !ok {
+			continue
+		}
+		matches = append(matches, n)
+		pkgPaths = append(pkgPaths, pkg.PkgPath)
+		qualified = append(qualified, pkg.Types.Name()+"."+name)
+	}
+	switch len(matches) {
+	case 0:
+		return nil, false, nil
+	case 1:
+		return matches[0], true, nil
+	default:
+		return nil, false, fmt.Errorf(
+			"gota: schema name %q is ambiguous: a type named %q is declared in more than one analyzed package (%s) — use a package-qualified $ref instead (%s)",
+			name, name, strings.Join(pkgPaths, ", "), strings.Join(qualified, " or "),
 		)
 	}
 }

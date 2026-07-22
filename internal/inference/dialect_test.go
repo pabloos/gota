@@ -50,7 +50,7 @@ func TestDetectBody_Dialect(t *testing.T) {
 	t.Run("a combined status+payload call records one response with both", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "Create")
 		op := &model.Operation{}
-		DetectBody(op, decl, info, nil, funcIndex, fakeDialect{})
+		DetectBody(op, decl, info, nil, funcIndex, fakeDialect{}, nil)
 		if len(op.Responses) != 1 {
 			t.Fatalf("Responses = %+v, want exactly one 201", op.Responses)
 		}
@@ -66,7 +66,7 @@ func TestDetectBody_Dialect(t *testing.T) {
 	t.Run("dialect recognition fires inside a followed helper frame", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "CreateViaHelper")
 		op := &model.Operation{}
-		DetectBody(op, decl, info, nil, funcIndex, fakeDialect{})
+		DetectBody(op, decl, info, nil, funcIndex, fakeDialect{}, nil)
 		resp, ok := op.Responses["201"]
 		if !ok {
 			t.Fatalf("Responses = %+v, missing 201 (respond's code and data params must resolve back to the call site, and the dialect must ride along on the followed frame's context)", op.Responses)
@@ -79,7 +79,7 @@ func TestDetectBody_Dialect(t *testing.T) {
 	t.Run("the net/http dialect sees nothing in a framework-shaped handler", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "Create")
 		op := &model.Operation{}
-		DetectBody(op, decl, info, nil, funcIndex, NetHTTP())
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
 		if len(op.Responses) != 0 {
 			t.Errorf("Responses = %+v, want none — c.JSON isn't a net/http idiom, and JSON's own body is empty so following finds nothing either", op.Responses)
 		}
@@ -88,7 +88,7 @@ func TestDetectBody_Dialect(t *testing.T) {
 	t.Run("a nil dialect disables detection entirely, not a panic", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "Create")
 		op := &model.Operation{}
-		DetectBody(op, decl, info, nil, funcIndex, nil)
+		DetectBody(op, decl, info, nil, funcIndex, nil, nil)
 		if op.RequestBody != nil || len(op.Responses) != 0 {
 			t.Errorf("op = %+v, want untouched", op)
 		}

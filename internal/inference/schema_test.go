@@ -78,7 +78,7 @@ func TestResolveSchemaRefs_PrimitivesAndOmitempty(t *testing.T) {
 	pkgs := loadFixture(t, "schema_primitives")
 
 	doc := docWithRef("User")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestResolveSchemaRefs_NestedStructBecomesLinkedComponent(t *testing.T) {
 	pkgs := loadFixture(t, "schema_nested")
 
 	doc := docWithRef("User")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestResolveSchemaRefs_Slices(t *testing.T) {
 	pkgs := loadFixture(t, "schema_slices")
 
 	doc := docWithRef("User")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestResolveSchemaRefs_TimeTimeField(t *testing.T) {
 	pkgs := loadFixture(t, "schema_time")
 
 	doc := docWithRef("User")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestResolveSchemaRefs_EmbeddedStructPromotesFields(t *testing.T) {
 	pkgs := loadFixture(t, "schema_embedded")
 
 	doc := docWithRef("User")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestResolveSchemaRefs_HandlesCycles(t *testing.T) {
 	pkgs := loadFixture(t, "schema_cycles")
 
 	doc := docWithRef("A")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestResolveSchemaRefs_UnknownTypeErrors(t *testing.T) {
 	pkgs := loadFixture(t, "schema_empty")
 
 	doc := docWithRef("DoesNotExist")
-	err := ResolveSchemaRefs(doc, pkgs)
+	err := ResolveSchemaRefs(doc, pkgs, nil)
 	if err == nil {
 		t.Fatal("expected an error for a $ref with no matching Go type")
 	}
@@ -238,16 +238,115 @@ func TestResolveSchemaRefs_AmbiguousNameErrors(t *testing.T) {
 		t.Fatalf("fixture setup: got %d packages, want 2 (a and b, each declaring User)", len(pkgs))
 	}
 
+	// A HAND-WRITTEN bare $ref to an ambiguous name still errors: gota
+	// can't know which package's User the author meant. (An INFERRED
+	// $ref for such a name is pre-qualified and never reaches this — see
+	// TestResolveSchemaRefs_PackageQualified.) The message now suggests
+	// the qualified forms the author can use instead.
 	doc := docWithRef("User")
-	err := ResolveSchemaRefs(doc, pkgs)
+	err := ResolveSchemaRefs(doc, pkgs, AmbiguousSchemaNames(pkgs))
 	if err == nil {
 		t.Fatal("expected an error for a $ref matching a type declared in two packages")
 	}
 	if !strings.Contains(err.Error(), "User") || !strings.Contains(err.Error(), "ambiguous") {
 		t.Errorf("error %q should mention the ambiguous name", err.Error())
 	}
+	if !strings.Contains(err.Error(), "a.User") || !strings.Contains(err.Error(), "b.User") {
+		t.Errorf("error %q should suggest the package-qualified forms a.User / b.User", err.Error())
+	}
 	if doc.Components != nil {
 		t.Errorf("Components = %+v, want nil — an ambiguous $ref must not partially resolve", doc.Components)
+	}
+}
+
+// TestResolveSchemaRefs_PackageQualified is the inference-side path: a
+// name declared in two packages, referenced by two DISTINCT
+// package-qualified $refs (as body inference emits them, given the
+// AmbiguousSchemaNames set), resolves to two distinct components keyed
+// by the qualified names — no error, no collision.
+func TestResolveSchemaRefs_PackageQualified(t *testing.T) {
+	pkgs := loadFixture(t, "schema_ambiguous")
+
+	ambiguous := AmbiguousSchemaNames(pkgs)
+	if !ambiguous["User"] {
+		t.Fatalf("AmbiguousSchemaNames = %+v, want it to flag User (declared in a and b)", ambiguous)
+	}
+
+	doc := docWithTwoRefs("a.User", "b.User")
+	if err := ResolveSchemaRefs(doc, pkgs, ambiguous); err != nil {
+		t.Fatalf("ResolveSchemaRefs: %v", err)
+	}
+
+	aUser, ok := doc.Components.Schemas["a.User"]
+	if !ok {
+		t.Fatalf("Components = %+v, missing a.User", doc.Components.Schemas)
+	}
+	if _, ok := aUser.Properties["id"]; !ok {
+		t.Errorf("a.User = %+v, want package a's User with an id field", aUser)
+	}
+	bUser, ok := doc.Components.Schemas["b.User"]
+	if !ok {
+		t.Fatalf("Components = %+v, missing b.User", doc.Components.Schemas)
+	}
+	if _, ok := bUser.Properties["name"]; !ok {
+		t.Errorf("b.User = %+v, want package b's User with a name field", bUser)
+	}
+}
+
+// TestResolveSchemaRefs_QualifiedGenericBase pins that componentName
+// keys the ambiguity check on the bare DECLARED name: a generic base
+// ("Box") declared in two packages qualifies each instantiation to
+// "<pkg>.Box_<Arg>", and the resolver's package-qualified branch scopes
+// the base to that package while resolving the arg globally.
+func TestResolveSchemaRefs_QualifiedGenericBase(t *testing.T) {
+	pkgs := loadFixture(t, "schema_ambiguous_generic")
+
+	ambiguous := AmbiguousSchemaNames(pkgs)
+	if !ambiguous["Box"] {
+		t.Fatalf("AmbiguousSchemaNames = %+v, want it to flag the generic base Box", ambiguous)
+	}
+
+	doc := docWithTwoRefs("a.Box_User", "b.Box_User")
+	if err := ResolveSchemaRefs(doc, pkgs, ambiguous); err != nil {
+		t.Fatalf("ResolveSchemaRefs: %v", err)
+	}
+
+	aBox, ok := doc.Components.Schemas["a.Box_User"]
+	if !ok {
+		t.Fatalf("Components = %+v, missing a.Box_User", doc.Components.Schemas)
+	}
+	// a.Box[User]: its Item field is User -> a $ref to a.User (arg is
+	// package a's User, qualified because "User" isn't ambiguous here...
+	// actually User is only in package a, so it stays bare "User").
+	if item := aBox.Properties["item"]; item == nil || item.Ref != schemaRefPrefix+"User" {
+		t.Errorf("a.Box_User.item = %+v, want a $ref to the substituted User", item)
+	}
+	bBox, ok := doc.Components.Schemas["b.Box_User"]
+	if !ok {
+		t.Fatalf("Components = %+v, missing b.Box_User", doc.Components.Schemas)
+	}
+	if _, ok := bBox.Properties["label"]; !ok {
+		t.Errorf("b.Box_User = %+v, want package b's Box with a label field", bBox)
+	}
+}
+
+// TestResolveSchemaRefs_SamePackageNameCollisionErrors pins the residual
+// the qualification can't break: two packages that share a package NAME
+// (both "config") at different paths, each declaring Settings, both
+// qualify to "config.Settings". register's origin guard must error
+// (naming both import paths), not silently overwrite one schema with the
+// other.
+func TestResolveSchemaRefs_SamePackageNameCollisionErrors(t *testing.T) {
+	pkgs := loadFixture(t, "schema_ambiguous_samepkg")
+
+	ambiguous := AmbiguousSchemaNames(pkgs)
+	doc := docWithTwoRefs("config.Settings", "config.Settings")
+	err := ResolveSchemaRefs(doc, pkgs, ambiguous)
+	if err == nil {
+		t.Fatal("expected an error: two distinct config.Settings collide on one component key")
+	}
+	if !strings.Contains(err.Error(), "config.Settings") {
+		t.Errorf("error %q should name the colliding component", err.Error())
 	}
 }
 
@@ -255,7 +354,7 @@ func TestResolveSchemaRefs_NoRefsIsANoop(t *testing.T) {
 	pkgs := loadFixture(t, "schema_empty")
 
 	doc := &model.Document{Paths: model.Paths{"/x": &model.PathItem{Get: &model.Operation{}}}}
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 	if doc.Components != nil {
@@ -272,7 +371,7 @@ func TestResolveSchemaRefs_GenericInstantiation(t *testing.T) {
 	pkgs := loadFixture(t, "schema_generics")
 
 	doc := docWithRef("Response_User")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
@@ -301,7 +400,7 @@ func TestResolveSchemaRefs_GenericInstantiationsDontCollide(t *testing.T) {
 	pkgs := loadFixture(t, "schema_generics")
 
 	doc := docWithTwoRefs("Response_User", "Response_Product")
-	if err := ResolveSchemaRefs(doc, pkgs); err != nil {
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
 		t.Fatalf("ResolveSchemaRefs: %v", err)
 	}
 
