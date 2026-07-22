@@ -274,19 +274,46 @@ func TestExtract_MethodDispatchFuncLit(t *testing.T) {
 		got[r.Method+" "+r.Path] = r
 	}
 
-	// The deliberately-too-complex "/products/" registration (a
-	// strings.HasSuffix path guard before the dispatch) must produce
-	// zero routes -- not a partial/wrong guess.
+	// Every one of these path prefixes is deliberately too complex, or
+	// outright unrecognizable, to the narrow dispatch-detection this
+	// plugin does -- each must produce zero routes, not a partial or
+	// wrong guess. See the fixture's own comments for exactly which
+	// shape each one declines on.
+	declinedPrefixes := []string{
+		"/products/",             // a non-method guard runs before the dispatch
+		"/multi-case",            // "case A, B:" -- a clause with multiple values
+		"/non-http-method",       // a case value that isn't a real HTTP method
+		"/multi-stmt-case",       // a case body with more than one statement
+		"/dynamic-case",          // a case value that's a variable, not a constant
+		"/if-init",               // an if statement with an init statement
+		"/if-non-method",         // a condition unrelated to r.Method
+		"/if-multi-stmt",         // an if body with more than one statement
+		"/wrong-selector",        // a comparison against a non-"Method" selector
+		"/non-request-method",    // a ".Method" selector on a non-*http.Request type
+		"/wrong-arity",           // a branch body calling a 1-argument delegate
+		"/not-a-call",            // a branch body that isn't a call at all
+		"/not-dispatch-shaped",   // a single statement that's neither switch nor if
+		"/not-equal",             // a "!=" comparison, not "=="
+		"/if-non-http-method",    // an if comparing r.Method to a non-HTTP-method string
+		"/unresolvable-delegate", // a delegate call that isn't a resolvable ident/selector
+		"/not-a-real-route",      // a custom type's own HandleFunc, not a ServeMux
+	}
 	for key := range got {
-		if strings.HasPrefix(key, "GET /products/") || strings.HasPrefix(key, "POST /products/") {
-			t.Errorf("route %q: the /products/ registration is deliberately too complex to recognize, want no routes from it at all", key)
+		for _, prefix := range declinedPrefixes {
+			if strings.Contains(key, prefix) {
+				t.Errorf("route %q: %s is deliberately too complex/unrecognizable, want no routes from it at all", key, prefix)
+			}
 		}
 	}
 
 	wantRoutes := map[string]string{
-		"POST /products":   "CreateProduct",
-		"GET /products":    "ListProducts",
-		"GET /warehouses/": "GetWarehouse",
+		"POST /products":         "CreateProduct",
+		"GET /products":          "ListProducts",
+		"GET /warehouses/":       "GetWarehouse",
+		"GET /connect-case":      "ConnectCaseSibling",
+		"GET /if-connect":        "IfConnectSibling",
+		"GET /reversed-operands": "ReversedOperandsDelegate", // r.Method as the right operand
+		"GET /if-no-else":        "IfNoElseDelegate",         // a bare "if" with no else
 	}
 	if len(got) != len(wantRoutes) {
 		t.Fatalf("got %d routes, want %d: %+v", len(got), len(wantRoutes), got)
@@ -303,4 +330,12 @@ func TestExtract_MethodDispatchFuncLit(t *testing.T) {
 			t.Errorf("route %q: HandlerDecl is nil, want the delegate's own *ast.FuncDecl (so its \"gota:\" comment can be extracted)", key)
 		}
 	}
+
+	t.Run("a CONNECT branch is skipped, not extracted, in either dispatch shape", func(t *testing.T) {
+		for key := range got {
+			if strings.HasPrefix(key, "CONNECT ") {
+				t.Errorf("routes = %+v, CONNECT should never be emitted (no OpenAPI Path Item slot)", got)
+			}
+		}
+	})
 }
