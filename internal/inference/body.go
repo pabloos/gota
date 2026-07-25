@@ -652,7 +652,15 @@ func valueSchema(e ast.Expr, ctx *evalCtx) (*model.Schema, bool) {
 // listed key becomes required: a map literal's keys are unconditionally
 // present, unlike a struct field that can be behind "omitempty".
 func mapLiteralSchema(lit *ast.CompositeLit, ctx *evalCtx) (*model.Schema, bool) {
-	mapType, ok := ctx.info.TypeOf(lit).(*types.Map)
+	// Underlying() so a NAMED map type — the common gin.H{...} envelope
+	// ("type H map[string]any") — is recognized too, not only an
+	// unnamed map[string]any literal; identity for the unnamed case.
+	// Nil-guarded: nil.Underlying() panics (unlike a nil type assertion).
+	t := ctx.info.TypeOf(lit)
+	if t == nil {
+		return nil, false
+	}
+	mapType, ok := t.Underlying().(*types.Map)
 	if !ok {
 		return nil, false
 	}

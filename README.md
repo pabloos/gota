@@ -38,13 +38,29 @@ func GetUser(w http.ResponseWriter, r *http.Request) { ... }
 
 ## Status
 
-`net/http` and [Chi](https://github.com/go-chi/chi) are supported
-routers — both plugins run unconditionally against every analyzed
-package (no flag needed to pick one; a plugin whose framework isn't
-present just contributes no routes) and share the same net/http-based
+`net/http`, [Chi](https://github.com/go-chi/chi), and
+[Gin](https://github.com/gin-gonic/gin) are supported routers — every
+plugin runs unconditionally against every analyzed package (no flag
+needed to pick one; a plugin whose framework isn't present just
+contributes no routes). `net/http` and Chi share the same net/http-based
 body inference, since Chi handlers are plain
 `func(w http.ResponseWriter, r *http.Request)` with no response-writing
-idiom of their own.
+idiom of their own. Gin, whose handlers write through `*gin.Context`
+(`c.JSON(201, obj)`, `c.ShouldBindJSON(&x)`), brings its own
+`inference.Dialect` that embeds the net/http one — so a Gin handler that
+falls back to `json.NewDecoder(c.Request.Body).Decode(&x)` is still
+understood.
+
+Gin routes are read off the engine and off `Group` variables, whose
+prefix is accumulated by object identity (`v1 := r.Group("/api/v1")` then
+`v1.GET("/users/:id", H)` → `/api/v1/users/{id}`), transitively through
+nested groups and inline-chained `r.Group("/v1").GET(...)`.
+`Any`/`Handle`/`Match` expand to their concrete methods; a `:name` param
+becomes `{name}`. Because Gin group functions register *relative* paths,
+a `func reg(rg *gin.RouterGroup){...}` register function has no
+locally-recoverable prefix and its routes are declined (the opposite of
+Chi's absolute-path constructors) — as are `*name` catch-alls, reassigned
+group variables, and non-constant methods.
 
 Chi's `Route`/`Group` nesting is followed to arbitrary depth,
 accumulating the real path prefix (`r.Route("/users", func(r
@@ -202,7 +218,7 @@ generic name by itself (`$ref: '#/components/schemas/Response'`, with no
 instantiation specified) all fall back to today's behavior rather than
 being newly resolved.
 
-Other router plugins — Gin, Echo — are not implemented yet; unlike Chi,
+Other router plugins — Echo, Fiber — are not implemented yet; like Gin,
 they'd also need their own `inference.Dialect` (see the body inference
 paragraph above), not just a router plugin.
 
@@ -376,26 +392,27 @@ Core engine — everything router-agnostic:
 Router plugins — everything specific to reading routes out of a given
 router's API:
 
-| Feature                                    | `net/http` | Chi |
-|----------------------------------------------|:----------:|:---:|
-| Route extraction (method + path, incl. path params) | ✅ | ✅ |
-| Method-less pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) |
-| Handler resolution: bare identifier            | ✅ | ✅ |
-| Handler resolution: method value (bound method) | ✅ | ✅ |
-| Handler resolution: cross-package reference    | ✅ | ✅ |
-| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) |
-| Nested path-prefix routing (`Route`/`Group`)   | n/a | ✅, arbitrary depth |
-| `Mount`-ed sub-router                          | n/a | same-package, zero-arg constructor function only |
+| Feature                                    | `net/http` | Chi | Gin |
+|----------------------------------------------|:----------:|:---:|:---:|
+| Route extraction (method + path, incl. path params) | ✅ | ✅ | ✅ (`:name` → `{name}`) |
+| Method-less / multi-method pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) | ✅ (`Any`; `Match([]string{…})` per constant method) |
+| Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) |
+| Handler resolution: method value (bound method) | ✅ | ✅ | ✅ |
+| Handler resolution: cross-package reference    | ✅ | ✅ | ✅ |
+| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a |
+| Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth |
+| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
-`internal/router/chi/chi_test.go` (fixture at
-`internal/router/chi/testdata/routes`, its own Go module — chi is a
-test-only dependency, isolated so it never bumps gota's own `go.mod`
-floor; same reasoning for `testdata/chi-basic`, used by
-`TestRun_ChiBasic`). Cross-package resolution itself is plugin-agnostic
-(`internal/astutil`, exercised end-to-end in
-`internal/generate/generate_test.go`) — any future plugin gets it for
-free by populating `Route.HandlerObj` the same way.
+`internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`
+(each framework fixture at `internal/router/<name>/testdata/routes`, its
+own Go module — chi and gin are test-only dependencies, isolated so they
+never bump gota's own `go.mod` floor; same reasoning for
+`testdata/chi-basic`, used by `TestRun_ChiBasic`). Cross-package
+resolution itself is plugin-agnostic (`internal/astutil`, exercised
+end-to-end in `internal/generate/generate_test.go`, and per-plugin in
+each `TestExtract_CrossPackage`) — any future plugin gets it for free by
+populating `Route.HandlerObj` the same way.
 
 Optional local git hooks (`.githooks/`) mirror the CI checks so failures
 show up before you even push: `pre-commit` runs `gofmt` only (fast, every
@@ -410,8 +427,8 @@ git config core.hooksPath .githooks
 ## Contributing
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
-dev setup and a list of concrete, well-scoped starting points (a Gin or
-Echo router plugin + dialect, cross-package `Mount` resolution).
+dev setup and a list of concrete, well-scoped starting points (an Echo
+or Fiber router plugin + dialect, cross-package `Mount` resolution).
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

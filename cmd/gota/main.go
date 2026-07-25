@@ -14,6 +14,7 @@ import (
 	"github.com/pabloos/gota/internal/generate"
 	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/chi"
+	"github.com/pabloos/gota/internal/router/gin"
 	"github.com/pabloos/gota/internal/router/nethttp"
 )
 
@@ -86,11 +87,13 @@ func run(args []string) error {
 		// Every configured plugin runs against every loaded package
 		// regardless of which framework it's actually written with — one
 		// whose framework isn't present in a given package just returns no
-		// routes for it, so both run unconditionally rather than needing a
-		// --router flag to pick one.
+		// routes for it, so they all run unconditionally rather than
+		// needing a --router flag to pick one. Chi handlers are plain
+		// net/http so it reuses the net/http dialect; Gin brings its own.
 		Routers: []generate.Router{
 			{Plugin: nethttp.New(), Dialect: inference.NetHTTP()},
 			{Plugin: chi.New(), Dialect: inference.NetHTTP()},
+			{Plugin: gin.New(), Dialect: inference.Gin()},
 		},
 	})
 	if err != nil {
