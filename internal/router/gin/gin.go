@@ -206,20 +206,33 @@ func groupPrefix(pkg *packages.Package, recvExpr ast.Expr, groupDefs map[types.O
 	}
 	switch e := recvExpr.(type) {
 	case *ast.CallExpr:
-		// An inline chained group: X.Group("/v1").GET(...).
 		sel, ok := e.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Group" || !isGinRouterMethodCall(pkg, sel) || len(e.Args) < 1 {
+		if !ok || !isGinRouterMethodCall(pkg, sel) {
 			return "", false
 		}
-		path, ok := stringLiteral(e.Args[0])
-		if !ok {
-			return "", false
+		switch sel.Sel.Name {
+		case "Use":
+			// ".Use(middleware)" returns the same route group as
+			// gin.IRoutes; it's transparent for the prefix, so recurse
+			// into its receiver: g.Group("/x").Use(mw).POST(...) keeps the
+			// "/x" prefix.
+			return groupPrefix(pkg, sel.X, groupDefs, visiting)
+		case "Group":
+			// An inline chained group: X.Group("/v1").GET(...).
+			if len(e.Args) < 1 {
+				return "", false
+			}
+			path, ok := stringLiteral(e.Args[0])
+			if !ok {
+				return "", false
+			}
+			parent, ok := groupPrefix(pkg, sel.X, groupDefs, visiting)
+			if !ok {
+				return "", false
+			}
+			return joinPath(parent, path), true
 		}
-		parent, ok := groupPrefix(pkg, sel.X, groupDefs, visiting)
-		if !ok {
-			return "", false
-		}
-		return joinPath(parent, path), true
+		return "", false
 	case *ast.Ident:
 		obj := pkg.TypesInfo.Uses[e]
 		if obj == nil || visiting[obj] {
@@ -329,9 +342,14 @@ func isGinRouterMethodCall(pkg *packages.Package, sel *ast.SelectorExpr) bool {
 	return isGinRouterType(pkg.TypesInfo.TypeOf(sel.X))
 }
 
-// isGinRouterType reports whether t is *gin.Engine or *gin.RouterGroup.
+// isGinRouterType reports whether t is a gin type a route can be
+// registered on: the concrete *gin.Engine / *gin.RouterGroup, or the
+// gin.IRoutes / gin.IRouter interfaces that a ".Use(mw)" chain returns
+// (g.Group("/x").Use(mw).POST(...) — the route method's receiver is the
+// interface, not the concrete group).
 func isGinRouterType(t types.Type) bool {
-	return isGinNamedType(t, "Engine") || isGinNamedType(t, "RouterGroup")
+	return isGinNamedType(t, "Engine") || isGinNamedType(t, "RouterGroup") ||
+		isGinNamedType(t, "IRoutes") || isGinNamedType(t, "IRouter")
 }
 
 // isGinNamedType reports whether t is the gin package's named type

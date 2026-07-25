@@ -3,7 +3,8 @@
 // (engine-direct routes, gin.Default()/gin.New(), single and nested
 // Group variables, inline chained Group, Any/Handle/Match, a ":id"
 // param, middleware-before-handler, an empty-prefix group whose route
-// path has no leading slash) plus the deliberately-declined
+// path has no leading slash, a ".Use(mw)" chain) plus the
+// deliberately-declined
 // shapes (a "*catchall" path, a *gin.RouterGroup-parameter register
 // function, a reassigned group variable, a non-constant Handle method,
 // a handler-less call).
@@ -38,6 +39,10 @@ func Register() {
 	noPrefix := r.Group("")
 	noPrefix.GET("current/user", CurrentUser)
 
+	// A ".Use(mw)" chain returns gin.IRoutes; the route method still
+	// registers on the underlying group's prefix -> POST /account/settings.
+	r.Group("/account").Use(authMiddleware).POST("/settings", UpdateSettings)
+
 	r.GET("/files/*path", CatchAllHandler) // declined: catch-all has no OpenAPI equivalent
 
 	registerTags(v1) // declined: *gin.RouterGroup param -> relative paths, no recoverable prefix
@@ -69,6 +74,7 @@ func CreateProduct(c *gin.Context)         {}
 func AdminStats(c *gin.Context)            {}
 func InlineThing(c *gin.Context)           {}
 func CurrentUser(c *gin.Context)           {}
+func UpdateSettings(c *gin.Context)        {}
 func CatchAllHandler(c *gin.Context)       {}
 func ListTags(c *gin.Context)              {}
 func ReassignedHandler(c *gin.Context)     {}

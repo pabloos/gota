@@ -115,6 +115,12 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
+	t.Run("a .Use(mw) chain keeps the group prefix (returns gin.IRoutes)", func(t *testing.T) {
+		if _, ok := got["POST /account/settings"]; !ok {
+			t.Errorf("routes = %+v, missing POST /account/settings (.Use() chain must keep the /account prefix)", got)
+		}
+	})
+
 	t.Run("an empty-prefix group + no-leading-slash path is rooted at /", func(t *testing.T) {
 		// gin serves every route from the engine's "/" base, so
 		// noPrefix.GET("current/user") on r.Group("") is GET /current/user
