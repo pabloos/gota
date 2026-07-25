@@ -115,6 +115,19 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
+	t.Run("an inline func-literal handler is carried via HandlerLit", func(t *testing.T) {
+		r, ok := got["GET /ping"]
+		if !ok {
+			t.Fatalf("routes = %+v, missing GET /ping (inline func literal)", got)
+		}
+		if r.HandlerLit == nil {
+			t.Error("route /ping: HandlerLit is nil, want the inline *ast.FuncLit")
+		}
+		if r.HandlerName != "" || r.HandlerDecl != nil || r.HandlerObj != nil {
+			t.Errorf("route /ping: an anonymous handler must have empty Name/Decl/Obj, got %+v", r)
+		}
+	})
+
 	t.Run("a .Use(mw) chain keeps the group prefix (returns gin.IRoutes)", func(t *testing.T) {
 		if _, ok := got["POST /account/settings"]; !ok {
 			t.Errorf("routes = %+v, missing POST /account/settings (.Use() chain must keep the /account prefix)", got)

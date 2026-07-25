@@ -304,7 +304,7 @@ func routeAt(pkg *packages.Package, methods []string, call *ast.CallExpr, pathId
 	if !ok {
 		return nil
 	}
-	handlerName, decl, file, obj, ok := resolveHandler(pkg, call.Args[len(call.Args)-1], funcDecls)
+	handlerName, decl, file, obj, lit, ok := resolveHandler(pkg, call.Args[len(call.Args)-1], funcDecls)
 	if !ok {
 		return nil
 	}
@@ -320,6 +320,7 @@ func routeAt(pkg *packages.Package, methods []string, call *ast.CallExpr, pathId
 			HandlerDecl: decl,
 			File:        file,
 			HandlerObj:  obj,
+			HandlerLit:  lit,
 			Pos:         pkg.Fset.Position(call.Pos()),
 		})
 	}
@@ -459,15 +460,18 @@ func unwrapCall(e ast.Expr) ast.Expr {
 // method value on a receiver, a qualified identifier from another
 // package, or a single-arg-call conversion/wrapper of any of those,
 // plus the go/types object it resolves to (populated even when decl is
-// nil, for internal/generate's cross-package backfill). Duplicated from
-// nethttp/chi; gin's only difference is the call site (the handler is
-// the variadic last argument), not this resolution body.
-func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, ok bool) {
+// nil, for internal/generate's cross-package backfill). An inline
+// function literal (r.GET("/x", func(c *gin.Context){...})) has no name
+// or object; it's returned via lit so internal/generate can infer its
+// body and synthesize an operationId. Duplicated from nethttp/chi (with
+// the added func-literal case); gin's only structural difference is the
+// call site (the handler is the variadic last argument), not this body.
+func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, lit *ast.FuncLit, ok bool) {
 	switch expr := unwrapCall(e).(type) {
 	case *ast.Ident:
 		identObj := pkg.TypesInfo.Uses[expr]
 		rd := decls[identObj]
-		return expr.Name, rd.Decl, rd.File, identObj, identObj != nil
+		return expr.Name, rd.Decl, rd.File, identObj, nil, identObj != nil
 	case *ast.SelectorExpr:
 		var o types.Object
 		if selection, ok := pkg.TypesInfo.Selections[expr]; ok {
@@ -476,9 +480,13 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]as
 			o = pkg.TypesInfo.Uses[expr.Sel] // qualified identifier, e.g. handlers.GetUser
 		}
 		rd := decls[o]
-		return expr.Sel.Name, rd.Decl, rd.File, o, o != nil
+		return expr.Sel.Name, rd.Decl, rd.File, o, nil, o != nil
+	case *ast.FuncLit:
+		// An inline handler: no name/decl/object to resolve — the body
+		// itself is the handler, carried through for body inference.
+		return "", nil, nil, nil, expr, true
 	}
-	return "", nil, nil, nil, false
+	return "", nil, nil, nil, nil, false
 }
 
 // constStringArg evaluates e as a compile-time string constant.

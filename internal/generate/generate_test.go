@@ -10,6 +10,7 @@ import (
 	"github.com/pabloos/gota/internal/generate"
 	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/chi"
+	"github.com/pabloos/gota/internal/router/gin"
 	"github.com/pabloos/gota/internal/router/nethttp"
 	"github.com/pabloos/gota/pkg/model"
 )
@@ -116,6 +117,52 @@ func TestRun_ChiBasic(t *testing.T) {
 	}
 
 	assertUserComponent(t, doc)
+}
+
+// TestRun_GinInline drives the whole pipeline over a gin route whose
+// handler is an inline function literal (testdata/gin-inline, its own Go
+// module). With no handler name to base an operationId on, generate must
+// synthesize one from the method+path, and body inference must still run
+// on the literal's own body — proving both the router.Route.HandlerLit
+// seam and generate's synthesis reach all the way through, not just the
+// gin plugin's unit test.
+func TestRun_GinInline(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/gin-inline")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: gin.New(), Dialect: inference.Gin()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+
+	version, ok := doc.Paths["/version"]
+	if !ok {
+		t.Fatalf("doc.Paths = %+v, missing /version (inline handler must still be emitted)", doc.Paths)
+	}
+	op := version.Get
+	if op == nil {
+		t.Fatal("/version has no GET operation")
+	}
+	if op.OperationID != "GetVersion" {
+		t.Errorf("operationId = %q, want synthesized \"GetVersion\"", op.OperationID)
+	}
+	resp, ok := op.Responses["200"]
+	if !ok {
+		t.Fatalf("Responses = %+v, missing 200 (c.JSON in the literal body)", op.Responses)
+	}
+	if schema := resp.Content["application/json"].Schema; schema == nil || schema.Ref != "#/components/schemas/VersionInfo" {
+		t.Errorf("200 schema = %+v, want $ref to VersionInfo inferred from the literal body", schema)
+	}
+	if doc.Components == nil || doc.Components.Schemas["VersionInfo"] == nil {
+		t.Errorf("Components = %+v, want a resolved VersionInfo component", doc.Components)
+	}
 }
 
 // TestRun_SchemaNameCollision is the real-world regression guard for the

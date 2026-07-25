@@ -21,6 +21,7 @@ type Route struct {
 	HandlerDecl *ast.FuncDecl // nil if Extract's own package didn't contain the declaration (e.g. a cross-package reference); internal/generate backfills this using HandlerObj when possible
 	File        *ast.File     // the file containing HandlerDecl; nil whenever HandlerDecl is nil
 	HandlerObj  types.Object  // the resolved go/types object for the handler, whenever expression-shape resolution succeeded at all — independent of whether HandlerDecl was also found; nil only if the plugin couldn't identify an object (e.g. an unrecognized expression shape)
+	HandlerLit  *ast.FuncLit  // set when the handler is an inline function literal (e.g. r.GET("/x", func(c *gin.Context){...})); HandlerName is then "" and HandlerDecl/HandlerObj nil, and internal/generate infers the body straight from the literal and synthesizes an operationId from the method+path
 	Pos         token.Position
 }
 

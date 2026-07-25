@@ -56,7 +56,12 @@ prefix is accumulated by object identity (`v1 := r.Group("/api/v1")` then
 `v1.GET("/users/:id", H)` → `/api/v1/users/{id}`), transitively through
 nested groups and inline-chained `r.Group("/v1").GET(...)`.
 `Any`/`Handle`/`Match` expand to their concrete methods; a `:name` param
-becomes `{name}`. Because Gin group functions register *relative* paths,
+becomes `{name}`; a `.Use(mw)` middleware chain
+(`g.Group("/x").Use(mw).POST(...)`) keeps the group's prefix. An inline
+handler — `r.GET("/version", func(c *gin.Context){ c.JSON(200, v) })` —
+is supported too: its body is inferred like any other, and since it has
+no name, its operationId is synthesized from the method and path
+(`GetVersion`). Because Gin group functions register *relative* paths,
 a `func reg(rg *gin.RouterGroup){...}` register function has no
 locally-recoverable prefix and its routes are declined (the opposite of
 Chi's absolute-path constructors) — as are `*name` catch-alls, reassigned
@@ -387,7 +392,7 @@ Core engine — everything router-agnostic:
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
 router's API:
@@ -399,6 +404,7 @@ router's API:
 | Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) |
 | Handler resolution: method value (bound method) | ✅ | ✅ | ✅ |
 | Handler resolution: cross-package reference    | ✅ | ✅ | ✅ |
+| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ❌ | ❌ | ✅ |
 | Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a |
 | Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth |
 | Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix |

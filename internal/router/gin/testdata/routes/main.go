@@ -3,8 +3,8 @@
 // (engine-direct routes, gin.Default()/gin.New(), single and nested
 // Group variables, inline chained Group, Any/Handle/Match, a ":id"
 // param, middleware-before-handler, an empty-prefix group whose route
-// path has no leading slash, a ".Use(mw)" chain) plus the
-// deliberately-declined
+// path has no leading slash, a ".Use(mw)" chain, an inline func-literal
+// handler) plus the deliberately-declined
 // shapes (a "*catchall" path, a *gin.RouterGroup-parameter register
 // function, a reassigned group variable, a non-constant Handle method,
 // a handler-less call).
@@ -23,6 +23,7 @@ func Register() {
 	r.Handle("GET", "/legacy", LegacyHandler)
 	r.Match([]string{"GET", "POST"}, "/multi", MultiHandler)
 	r.GET("/mw", authMiddleware, WithMiddlewareHandler) // handler is the LAST arg
+	r.GET("/ping", func(c *gin.Context) {})             // inline func-literal handler
 
 	v1 := r.Group("/api/v1")
 	v1.GET("/products", ListProducts)

@@ -86,12 +86,25 @@ func Run(opts Options) (*model.Document, error) {
 						info = fd.Info // the declaring package's Info, not the registering one
 					}
 				}
+				// An inline handler (r.GET("/x", func(c *Ctx){...})) has no
+				// name to base an operationId on, so synthesize one from the
+				// method+path — always non-empty and unique per (method,path).
+				// Its body is walked straight from the literal (DetectBody
+				// only reads the body block), typed by the registering
+				// package's own Info.
+				handlerDecl := route.HandlerDecl
+				if handlerDecl == nil && route.HandlerLit != nil {
+					if route.HandlerName == "" {
+						route.HandlerName = syntheticHandlerName(route.Method, route.Path)
+					}
+					handlerDecl = &ast.FuncDecl{Type: route.HandlerLit.Type, Body: route.HandlerLit.Body}
+				}
 				var cmap ast.CommentMap
 				if route.File != nil {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
 				inferred := inference.Operation(route)
-				inference.DetectBody(inferred, route.HandlerDecl, info, cmap, globalIndex, rt.Dialect, ambiguous)
+				inference.DetectBody(inferred, handlerDecl, info, cmap, globalIndex, rt.Dialect, ambiguous)
 				pending = append(pending, pendingOperation{route: route, info: info, cmap: cmap, op: inferred})
 			}
 		}
@@ -202,6 +215,16 @@ func pathSuffix(path string) string {
 		}
 	}
 	return b.String()
+}
+
+// syntheticHandlerName builds an operationId for an inline handler that
+// has no name of its own, from its method and path ("GET", "/version" ->
+// "GetVersion"). (method, path) pairs are unique per document, so the
+// result is unique among anonymous handlers; a clash with a same-named
+// declared handler is still resolved by disambiguateOperationIDs.
+func syntheticHandlerName(method, path string) string {
+	m := strings.ToUpper(method[:1]) + strings.ToLower(method[1:])
+	return m + pathSuffix(path)
 }
 
 // mergeDeclaredComment extracts any "gota:" comment on route's handler
