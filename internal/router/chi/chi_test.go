@@ -211,9 +211,16 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
-	t.Run("an inline func literal handler is declined, not resolved to a name", func(t *testing.T) {
-		if _, ok := got["GET /inline"]; ok {
-			t.Errorf("routes = %+v, an inline func literal handler has no name/decl to resolve", got)
+	t.Run("an inline func literal handler is carried via HandlerLit", func(t *testing.T) {
+		r, ok := got["GET /inline"]
+		if !ok {
+			t.Fatalf("routes = %+v, missing GET /inline (inline func literal)", got)
+		}
+		if r.HandlerLit == nil {
+			t.Error("route /inline: HandlerLit is nil, want the inline *ast.FuncLit")
+		}
+		if r.HandlerName != "" || r.HandlerDecl != nil || r.HandlerObj != nil {
+			t.Errorf("route /inline: an anonymous handler must have empty Name/Decl/Obj, got %+v", r)
 		}
 	})
 

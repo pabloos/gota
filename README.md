@@ -404,7 +404,7 @@ router's API:
 | Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) |
 | Handler resolution: method value (bound method) | ✅ | ✅ | ✅ |
 | Handler resolution: cross-package reference    | ✅ | ✅ | ✅ |
-| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ❌ | ❌ | ✅ |
+| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ✅ (explicit-method pattern only; a method-less inline closure is declined as dispatcher-ambiguous) | ✅ | ✅ |
 | Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a |
 | Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth |
 | Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix |

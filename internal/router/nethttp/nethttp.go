@@ -83,20 +83,30 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 			// doing its own switch/if-else dispatch on r.Method (the
 			// pre-Go-1.22 idiom for method dispatch on one path) needs a
 			// completely different extraction: one Route per branch, each
-			// bound to that branch's real delegate handler — not one
-			// Route per allMethods entry bound to the anonymous closure
-			// itself, which resolveHandler below would never resolve
-			// anyway (it has no case for *ast.FuncLit).
+			// bound to that branch's real delegate handler — not one Route
+			// per allMethods entry bound to the closure itself. This must
+			// run before resolveHandler, which now DOES accept a FuncLit
+			// (as a plain inline handler): a dispatcher closure would
+			// otherwise be misread as one inline handler for all methods
+			// instead of its per-branch delegates.
 			if len(methods) > 1 {
 				if lit, ok := unwrapCall(call.Args[1]).(*ast.FuncLit); ok {
 					if dispatched, ok := dispatchRoutes(pkg, lit, funcDecls, path, pkg.Fset.Position(call.Pos())); ok {
 						routes = append(routes, dispatched...)
-						return true
 					}
+					// A method-less inline closure is either a recognized
+					// dispatcher (handled just above) or declined — never
+					// treated as one all-methods catch-all handler, because a
+					// hand-rolled dispatcher (the reason this branch exists)
+					// can't be told apart from a real catch-all without a
+					// deeper read of its body. An explicit-method inline
+					// handler ("GET /x", func...) is unambiguous and IS
+					// supported, via resolveHandler's FuncLit case below.
+					return true
 				}
 			}
 
-			handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, call.Args[1], funcDecls)
+			handlerName, decl, declFile, handlerObj, lit, ok := resolveHandler(pkg, call.Args[1], funcDecls)
 			if !ok {
 				return true
 			}
@@ -108,6 +118,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 					HandlerDecl: decl,
 					File:        declFile,
 					HandlerObj:  handlerObj,
+					HandlerLit:  lit,
 					Pos:         pkg.Fset.Position(call.Pos()),
 				})
 			}
@@ -223,12 +234,15 @@ func unwrapCall(e ast.Expr) ast.Expr {
 // returned in that case: internal/generate uses it to resolve the
 // declaration across every loaded package, since a single plugin
 // invocation only ever sees one.
-func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, ok bool) {
+// An inline handler (HandleFunc(pattern, func(w, r){...})) that isn't a
+// method dispatcher has no name or object; it's returned via lit so
+// internal/generate can infer its body and synthesize an operationId.
+func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, lit *ast.FuncLit, ok bool) {
 	switch expr := unwrapCall(e).(type) {
 	case *ast.Ident:
 		identObj := pkg.TypesInfo.Uses[expr]
 		rd := decls[identObj]
-		return expr.Name, rd.Decl, rd.File, identObj, true
+		return expr.Name, rd.Decl, rd.File, identObj, nil, true
 	case *ast.SelectorExpr:
 		var obj types.Object
 		if selection, ok := pkg.TypesInfo.Selections[expr]; ok {
@@ -237,9 +251,11 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]as
 			obj = pkg.TypesInfo.Uses[expr.Sel] // qualified identifier, e.g. handlers.GetUser
 		}
 		rd := decls[obj]
-		return expr.Sel.Name, rd.Decl, rd.File, obj, true
+		return expr.Sel.Name, rd.Decl, rd.File, obj, nil, true
+	case *ast.FuncLit:
+		return "", nil, nil, nil, expr, true
 	}
-	return "", nil, nil, nil, false
+	return "", nil, nil, nil, nil, false
 }
 
 // methodBranch is one recognized "case http.MethodX:"/"if r.Method ==
@@ -279,9 +295,14 @@ func dispatchRoutes(pkg *packages.Package, lit *ast.FuncLit, decls map[types.Obj
 
 	var routes []router.Route
 	for _, b := range branches {
-		handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, b.call.Fun, decls)
-		if !ok {
-			return nil, false // one unresolvable branch aborts the whole registration -- see dispatchRoutes' doc comment
+		handlerName, decl, declFile, handlerObj, lit, ok := resolveHandler(pkg, b.call.Fun, decls)
+		if !ok || lit != nil {
+			// One unresolvable branch aborts the whole registration (see
+			// dispatchRoutes' doc comment). A branch that delegates to an
+			// inline closure (an IIFE) is not a named handler and counts as
+			// unresolvable here — a dispatcher's branches must each name a
+			// real delegate.
+			return nil, false
 		}
 		routes = append(routes, router.Route{
 			Method:      b.method,

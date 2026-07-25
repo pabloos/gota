@@ -55,13 +55,15 @@ func TestExtract(t *testing.T) {
 		got[r.Method+" "+r.Path] = r
 	}
 
-	// /users/{id} and /users declare an explicit method, so they produce
-	// exactly one route each. /legacy, /health and /hosted have no method
-	// in their pattern, which net/http's ServeMux docs say "matches every
-	// method" — each expands into 8 routes (TestExtract_NoMethodPatternMatchesAllMethods
-	// checks that expansion in detail; here just the totals and the
-	// explicit-method routes matter).
-	wantTotal := 2 + 3*len(allMethodsForTest)
+	// /users/{id}, /users and the inline POST /inline declare an explicit
+	// method, so they produce exactly one route each. /legacy, /health and
+	// /hosted have no method in their pattern, which net/http's ServeMux
+	// docs say "matches every method" — each expands into 8 routes
+	// (TestExtract_NoMethodPatternMatchesAllMethods checks that expansion
+	// in detail; here just the totals and the explicit-method routes
+	// matter). The method-less inline closure /inline-methodless is
+	// declined, contributing nothing.
+	wantTotal := 3 + 3*len(allMethodsForTest)
 	if len(got) != wantTotal {
 		t.Fatalf("got %d routes, want %d: %+v", len(got), wantTotal, got)
 	}
@@ -95,6 +97,27 @@ func TestExtract(t *testing.T) {
 	if createUser.HandlerName != "CreateUser" {
 		t.Errorf("HandlerName = %q, want CreateUser", createUser.HandlerName)
 	}
+
+	t.Run("an explicit-method inline func literal is carried via HandlerLit", func(t *testing.T) {
+		r, ok := got[http.MethodPost+" /inline"]
+		if !ok {
+			t.Fatalf("missing POST /inline (explicit-method inline handler)")
+		}
+		if r.HandlerLit == nil {
+			t.Error("HandlerLit is nil, want the inline *ast.FuncLit")
+		}
+		if r.HandlerName != "" || r.HandlerDecl != nil || r.HandlerObj != nil {
+			t.Errorf("an anonymous handler must have empty Name/Decl/Obj, got %+v", r)
+		}
+	})
+
+	t.Run("a method-less inline closure is declined", func(t *testing.T) {
+		for key := range got {
+			if strings.HasSuffix(key, " /inline-methodless") {
+				t.Errorf("routes contain %q, a method-less inline closure must be declined", key)
+			}
+		}
+	})
 }
 
 // TestExtract_NoMethodPatternMatchesAllMethods pins down net/http's own

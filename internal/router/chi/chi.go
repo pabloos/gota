@@ -749,7 +749,7 @@ func methodRoute(pkg *packages.Package, method, pattern string, handlerExpr ast.
 	if !ok {
 		return nil
 	}
-	handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, handlerExpr, funcDecls)
+	handlerName, decl, declFile, handlerObj, lit, ok := resolveHandler(pkg, handlerExpr, funcDecls)
 	if !ok {
 		return nil
 	}
@@ -760,6 +760,7 @@ func methodRoute(pkg *packages.Package, method, pattern string, handlerExpr ast.
 		HandlerDecl: decl,
 		File:        declFile,
 		HandlerObj:  handlerObj,
+		HandlerLit:  lit,
 		Pos:         pkg.Fset.Position(pos),
 	}}
 }
@@ -771,7 +772,7 @@ func allMethodsRoutes(pkg *packages.Package, pattern string, handlerExpr ast.Exp
 	if !ok {
 		return nil
 	}
-	handlerName, decl, declFile, handlerObj, ok := resolveHandler(pkg, handlerExpr, funcDecls)
+	handlerName, decl, declFile, handlerObj, lit, ok := resolveHandler(pkg, handlerExpr, funcDecls)
 	if !ok {
 		return nil
 	}
@@ -784,6 +785,7 @@ func allMethodsRoutes(pkg *packages.Package, pattern string, handlerExpr ast.Exp
 			HandlerDecl: decl,
 			File:        declFile,
 			HandlerObj:  handlerObj,
+			HandlerLit:  lit,
 			Pos:         pkg.Fset.Position(pos),
 		})
 	}
@@ -920,16 +922,18 @@ func unwrapCall(e ast.Expr) ast.Expr {
 // (Get(pattern, srv.GetUser)), a qualified identifier from another
 // package (Get(pattern, handlers.GetUser)), or an http.HandlerFunc
 // conversion (or middleware wrapper) of any of those, plus the
-// go/types object it resolves to. Identical in shape to nethttp.go's
-// own resolveHandler — see that function's doc comment for the full
-// rationale (decl/file via object identity, obj always populated for
-// internal/generate's cross-package backfill even when decl isn't).
-func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, ok bool) {
+// go/types object it resolves to. An inline handler closure
+// (Get(pattern, func(w, r){...})) has no name or object and is returned
+// via lit for internal/generate to infer and name. Identical in shape to
+// nethttp.go's own resolveHandler — see that function's doc comment for
+// the full rationale (decl/file via object identity, obj always populated
+// for internal/generate's cross-package backfill even when decl isn't).
+func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]astutil.FuncDeclInfo) (name string, decl *ast.FuncDecl, file *ast.File, obj types.Object, lit *ast.FuncLit, ok bool) {
 	switch expr := unwrapCall(e).(type) {
 	case *ast.Ident:
 		identObj := pkg.TypesInfo.Uses[expr]
 		rd := decls[identObj]
-		return expr.Name, rd.Decl, rd.File, identObj, true
+		return expr.Name, rd.Decl, rd.File, identObj, nil, true
 	case *ast.SelectorExpr:
 		var obj types.Object
 		if selection, ok := pkg.TypesInfo.Selections[expr]; ok {
@@ -938,9 +942,11 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]as
 			obj = pkg.TypesInfo.Uses[expr.Sel] // qualified identifier, e.g. handlers.GetUser
 		}
 		rd := decls[obj]
-		return expr.Sel.Name, rd.Decl, rd.File, obj, true
+		return expr.Sel.Name, rd.Decl, rd.File, obj, nil, true
+	case *ast.FuncLit:
+		return "", nil, nil, nil, expr, true
 	}
-	return "", nil, nil, nil, false
+	return "", nil, nil, nil, nil, false
 }
 
 // constStringArg evaluates e as a compile-time string constant.

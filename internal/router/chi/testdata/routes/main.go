@@ -134,7 +134,8 @@ func EdgeCases() chi.Router {
 	r.Get(constPath, ConstPathHandler)
 
 	// resolveHandler: the handler is an inline func literal, not an
-	// identifier or selector.
+	// identifier or selector -- carried via Route.HandlerLit so
+	// internal/generate can infer its body and synthesize an operationId.
 	r.Get("/inline", func(w http.ResponseWriter, req *http.Request) {})
 
 	// normalizePath: an unterminated "{" -- a typo that's still a valid
