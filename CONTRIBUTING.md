@@ -9,8 +9,9 @@ By participating, you're expected to follow the
 
 ## Getting set up
 
-Go 1.22.5+ is all you need — no other toolchains, no code generation step
-to run first.
+Go 1.23+ is all you need to build and test gota — no other toolchains, no
+code generation step to run first. (Analyzing targets written for a newer
+Go is a separate matter — see [Analyzing modern targets](#analyzing-modern-targets).)
 
 ```sh
 git clone https://github.com/pabloos/gota.git
@@ -31,6 +32,31 @@ Try the CLI against the bundled fixture:
 ```sh
 go run ./cmd/gota --dir testdata/nethttp-basic --out /tmp/openapi.yaml
 ```
+
+### Analyzing modern targets
+
+gota reads a target with `go/packages` + `go/types`, and that imposes two
+version ceilings that are independent of each other and of gota's own
+`go.mod` floor (which only sets the minimum Go needed to *build* gota):
+
+1. **Export-data reader.** gota decodes some of a target's dependencies
+   from compiler export data via `golang.org/x/tools`. A too-old
+   `x/tools` can't read export data produced by a newer Go toolchain and
+   fails with `package "X" without types was imported from "Y"`. Keeping
+   `x/tools` reasonably current avoids this; the pinned version reads
+   Go 1.25/1.26 export data.
+2. **Source type-checker.** A dependency whose own `go.mod` requires
+   Go *N* can't be type-checked by a gota binary *built* with Go < *N*
+   (`package requires newer Go version goN (application built with goM)`).
+   This is inherent to `go/types` and is fixed only by **building gota
+   with a Go toolchain ≥ the newest `go` directive among the target's
+   modules** — not by anything in gota's own `go.mod`.
+
+Practical consequence: the `go 1.23` floor keeps gota buildable on older
+Go, but **release builds (and anyone analyzing a bleeding-edge target)
+should use the current Go toolchain**. The floor and the build toolchain
+are deliberately decoupled — a low floor does not mean gota must be built
+with an old compiler.
 
 ### Local git hooks (optional)
 

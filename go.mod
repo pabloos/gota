@@ -1,10 +1,10 @@
 module github.com/pabloos/gota
 
-go 1.22.5
+go 1.23.0
 
 require (
 	github.com/getkin/kin-openapi v0.135.0
-	golang.org/x/tools v0.26.0
+	golang.org/x/tools v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -18,6 +18,6 @@ require (
 	github.com/oasdiff/yaml3 v0.0.9 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/woodsbury/decimal128 v1.3.0 // indirect
-	golang.org/x/mod v0.21.0 // indirect
-	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/mod v0.27.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
 )
