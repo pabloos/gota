@@ -581,6 +581,18 @@ func shallowRefSchema(t types.Type, ambiguous map[string]bool) (*model.Schema, b
 		if _, isStruct := tt.Underlying().(*types.Struct); !isStruct {
 			return nil, false
 		}
+		// A named struct declared inside a function (or otherwise not at
+		// its package's top level) can't be resolved to a component by
+		// ResolveSchemaRefs — that pass only looks up package-scope types —
+		// so a $ref to it would error the whole document. Degrade to a
+		// generic object schema instead (the same posture as the
+		// non-string-keyed map below): the response is known to be a JSON
+		// object, just not detailed. A package-level type still gets a
+		// $ref, including an instantiated generic, whose Obj() is its
+		// package-level origin.
+		if obj := tt.Obj(); obj.Pkg() == nil || obj.Pkg().Scope().Lookup(obj.Name()) != obj {
+			return &model.Schema{Type: "object"}, true
+		}
 		return &model.Schema{Ref: schemaRefPrefix + componentName(tt, ambiguous)}, true
 	case *types.Slice:
 		item, ok := shallowRefSchema(tt.Elem(), ambiguous)

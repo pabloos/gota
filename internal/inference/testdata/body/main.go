@@ -67,6 +67,17 @@ func EncodeGenericResponse(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(Response[User]{Data: User{ID: 1}})
 }
 
+// EncodeFunctionLocalType responds with a struct declared inside the
+// function. ResolveSchemaRefs can only look up package-scope types, so a
+// $ref to this would be unresolvable and error the whole document; the
+// response must degrade to a generic object schema instead.
+func EncodeFunctionLocalType(w http.ResponseWriter, r *http.Request) {
+	type validationEvent struct {
+		Success bool `json:"success"`
+	}
+	json.NewEncoder(w).Encode(validationEvent{Success: true})
+}
+
 func EncodeErrorThenSuccess(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		json.NewEncoder(w).Encode(ErrorResponse{Message: "bad"})

@@ -111,6 +111,23 @@ func TestDetectBody(t *testing.T) {
 		}
 	})
 
+	t.Run("a function-local response type degrades to a generic object, not an unresolvable $ref", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "EncodeFunctionLocalType")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
+		resp, ok := op.Responses["200"]
+		if !ok {
+			t.Fatal("200 response not detected")
+		}
+		schema := resp.Content["application/json"].Schema
+		if schema.Ref != "" {
+			t.Errorf("response schema = %+v, want no $ref (a local type isn't a resolvable component)", schema)
+		}
+		if schema.Type != "object" {
+			t.Errorf("response schema = %+v, want a generic {type: object} degrade", schema)
+		}
+	})
+
 	t.Run("last of multiple Encode calls wins", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "EncodeErrorThenSuccess")
 		op := &model.Operation{}
