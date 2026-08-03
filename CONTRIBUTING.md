@@ -59,6 +59,14 @@ should use the current Go toolchain**. The floor and the build toolchain
 are deliberately decoupled — a low floor does not mean gota must be built
 with an old compiler.
 
+`--dir` points at a single module. A response type declared in a
+*different* module (a dependency, or another module in a `go.work`
+workspace) still resolves to a real component — `ResolveSchemaRefs` falls
+back from the analyzed roots to the whole reachable import graph. Pointing
+`--dir` at a workspace root (a directory with a `go.work` but no `go.mod`)
+is rejected with an actionable error, since `./...` matches none of the
+workspace's modules; point it at one of the modules instead.
+
 ### Local git hooks (optional)
 
 `.githooks/` mirrors what CI checks, so problems show up before you push

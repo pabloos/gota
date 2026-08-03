@@ -29,13 +29,20 @@ const schemaRefPrefix = "#/components/schemas/"
 // emitted (e.g. "author.UpdateRequest") is looked up and stored under
 // the identical component key.
 //
-// It returns an error if a $ref names a schema with no matching Go type
-// anywhere in pkgs; if a HAND-WRITTEN comment references a bare name
-// that's declared in more than one package (gota can't tell which was
-// meant — an inferred $ref for such a name is pre-qualified and doesn't
-// hit this); or if two distinct types would collide on one component
-// key even after qualification (see register). It does not attempt any
-// inference for operations that never declare a $ref.
+// A type is looked up in the analyzed root packages first, then — if not
+// found there — in the full reachable import graph, so a $ref to a type
+// declared in a dependency or another go.work module (a handler returning
+// []*catalog.Product) resolves rather than aborting.
+//
+// It returns an error only if a $ref names a schema with no matching Go
+// type anywhere in that graph (typically a typo in a hand-written
+// comment — an inferred $ref is always to a type already in the graph);
+// if a HAND-WRITTEN comment references a bare name that's declared in more
+// than one package (gota can't tell which was meant — an inferred $ref for
+// such a name is pre-qualified and doesn't hit this); or if two distinct
+// types would collide on one component key even after qualification (see
+// register). It does not attempt any inference for operations that never
+// declare a $ref.
 func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous map[string]bool) error {
 	names := map[string]bool{}
 	for _, item := range doc.Paths {
@@ -51,7 +58,16 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous 
 		return nil
 	}
 
-	reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous}
+	// reachable is every package transitively imported from the analyzed
+	// roots, for resolveByName's dependency fallback. packages.Visit walks
+	// the whole import graph (roots included).
+	var reachable []*packages.Package
+	packages.Visit(pkgs, func(p *packages.Package) bool {
+		reachable = append(reachable, p)
+		return true
+	}, nil)
+
+	reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, reachable: reachable}
 	for name := range names {
 		if err := reg.resolveByName(name, pkgs); err != nil {
 			return err
@@ -155,14 +171,21 @@ func walkSchema(s *model.Schema, visit func(*model.Schema)) {
 type registry struct {
 	schemas    map[string]*model.Schema
 	inProgress map[string]bool
-	ambiguous  map[string]bool   // names to package-qualify, see AmbiguousSchemaNames
-	origin     map[string]string // component key -> the package path that produced it, for the collision guard
-	err        error             // first residual-collision error (two distinct types on one key), checked by ResolveSchemaRefs
+	ambiguous  map[string]bool     // names to package-qualify, see AmbiguousSchemaNames
+	origin     map[string]string   // component key -> the package path that produced it, for the collision guard
+	reachable  []*packages.Package // the analyzed roots plus every package transitively imported, for the dependency fallback
+	err        error               // first residual-collision error (two distinct types on one key), checked by ResolveSchemaRefs
 }
 
 // resolveByName is the $ref entry point: name comes from a "$ref:
-// '#/components/schemas/<name>'" string in a "gota:" comment, so the
-// matching Go type must be looked up by name across pkgs.
+// '#/components/schemas/<name>'" string — written in a "gota:" comment or
+// produced by body inference — so the matching Go type is looked up by
+// name. It searches the analyzed root packages first; if the name isn't
+// there it falls back to the full reachable graph (dependencies and other
+// go.work modules), so a handler returning a type declared in a different
+// module — e.g. []*catalog.Product — resolves to a real component
+// instead of aborting. Once the *types.Named is found, register expands
+// the whole type tree by object identity, no further name lookup.
 func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 	if _, ok := r.schemas[name]; ok {
 		return nil
@@ -172,7 +195,12 @@ func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("gota: comment references schema %q but no Go type named %q was found in the analyzed packages", name, name)
+		if named, found, err = lookupType(name, r.reachable); err != nil {
+			return err
+		}
+	}
+	if !found {
+		return fmt.Errorf("gota: could not resolve $ref to schema %q: no Go type named %q was found in the analyzed packages or their dependencies — if this name came from a \"gota:\" comment, check its spelling (inferred $refs resolve automatically)", name, name)
 	}
 	r.register(named)
 	return nil

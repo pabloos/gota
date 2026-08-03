@@ -165,6 +165,51 @@ func TestRun_GinInline(t *testing.T) {
 	}
 }
 
+// TestRun_CrossModuleType is the regression guard for a handler whose
+// response type is declared in a DIFFERENT module (fixture:
+// testdata/cross-module — an `api` module importing a `lib` module via a
+// replace). gota analyzes only `api`, so catalog.Product is a
+// dependency, not an analyzed root. Before the dependency fallback,
+// ResolveSchemaRefs looked up only the roots and aborted the whole
+// document with a "no Go type named Product" error; now it resolves
+// the type from the reachable import graph into a real component.
+func TestRun_CrossModuleType(t *testing.T) {
+	dir, err := filepath.Abs("testdata/cross-module/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+
+	clients, ok := doc.Paths["/clients"]
+	if !ok {
+		t.Fatalf("doc.Paths = %+v, missing /clients", doc.Paths)
+	}
+	resp, ok := clients.Get.Responses["200"]
+	if !ok {
+		t.Fatalf("Responses = %+v, missing 200", clients.Get.Responses)
+	}
+	// []*Product -> an array whose items $ref the cross-module type.
+	items := resp.Content["application/json"].Schema.Items
+	if items == nil || items.Ref != "#/components/schemas/Product" {
+		t.Errorf("200 items schema = %+v, want $ref to Product", items)
+	}
+	if doc.Components == nil || doc.Components.Schemas["Product"] == nil {
+		t.Fatalf("Components = %+v, want Product resolved from the dependency module", doc.Components)
+	}
+	if doc.Components.Schemas["Product"].Properties["name"] == nil {
+		t.Errorf("Product = %+v, want its fields expanded (name), not a bare object", doc.Components.Schemas["Product"])
+	}
+}
+
 // TestRun_SchemaNameCollision is the real-world regression guard for the
 // gmhafiz/go8 gap: two handler packages each declare their own Widget
 // and infer $refs to it. Before package-qualified disambiguation this
