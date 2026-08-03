@@ -3,7 +3,9 @@
 // (HandleFunc/Handle, a chained .Methods() and its absence, methods
 // found through an intervening builder call, single-arg / multi-arg /
 // curried middleware unwrapping to the real handler, single and nested
-// subrouter variables, an inline chained subrouter, an
+// subrouter variables, an inline chained subrouter, a
+// NewRoute().Subrouter() inheriting the parent prefix, a handler that is
+// a factory call returning http.Handler (free function and method), an
 // identity-preserving self-reconfiguration (r = r.StrictSlash(true)), a
 // "{id:regex}" param, a "{rest:.*}" catch-all, an inline func literal
 // handler, a router-level .Use) plus the deliberately-declined shapes (a
@@ -48,6 +50,18 @@ func Register() *mux.Router {
 	admin := api.PathPrefix("/admin").Subrouter()
 	admin.HandleFunc("/stats", AdminStats).Methods("GET")
 
+	// A NewRoute().Subrouter() adds no path segment (a middleware-only
+	// subrouter) but must INHERIT the parent's accumulated prefix.
+	mw := api.NewRoute().Subrouter()
+	mw.HandleFunc("/inherited", InheritedHandler).Methods("GET") // -> /api/v1/inherited
+
+	// The handler is a factory call returning http.Handler — a free
+	// function and a method — the "return a middleware-wrapped handler"
+	// idiom. The route is recognized via the factory's own name.
+	r.Handle("/made", makeHandler()).Methods("GET")
+	ct := &controller{}
+	r.Handle("/from-method", ct.build()).Methods("POST")
+
 	r.PathPrefix("/inline").Subrouter().HandleFunc("/thing", InlineThing).Methods("GET") // inline chained
 
 	// Declined shapes.
@@ -79,6 +93,18 @@ func cors(origin string) func(http.Handler) http.Handler {
 // logging is a router-level mux.MiddlewareFunc.
 func logging(next http.Handler) http.Handler { return next }
 
+// makeHandler is a free factory returning an already-wrapped handler.
+func makeHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+}
+
+type controller struct{}
+
+// build is a method factory returning an already-wrapped handler.
+func (c *controller) build() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+}
+
 func GetUser(w http.ResponseWriter, r *http.Request)           {}
 func CreateUser(w http.ResponseWriter, r *http.Request)        {}
 func HealthCheck(w http.ResponseWriter, r *http.Request)       {}
@@ -91,6 +117,7 @@ func CorsHandler(w http.ResponseWriter, r *http.Request)       {}
 func ListProducts(w http.ResponseWriter, r *http.Request)      {}
 func AdminStats(w http.ResponseWriter, r *http.Request)        {}
 func InlineThing(w http.ResponseWriter, r *http.Request)       {}
+func InheritedHandler(w http.ResponseWriter, r *http.Request)  {}
 func ReassignedHandler(w http.ResponseWriter, r *http.Request) {}
 func DynamicHandler(w http.ResponseWriter, r *http.Request)    {}
 func BuilderHandler(w http.ResponseWriter, r *http.Request)    {}

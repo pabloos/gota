@@ -44,6 +44,18 @@
 // middleware (r.Use(mw)) doesn't wrap a specific handler and is
 // correctly irrelevant to inference.
 //
+// The handler is also commonly produced by a factory call returning
+// http.Handler — a free function (Handle(p, made())) or a method
+// (Handle(p, controller.build())), the idiom of returning a
+// handler already wrapped in middleware. The route is recognized via the
+// factory's own name (its operationId), and the factory's body is where
+// body inference then looks.
+//
+// A subrouter built with NewRoute().Subrouter() (a middleware-only
+// subrouter, "sec := root.NewRoute().Subrouter()") adds no path segment
+// but INHERITS the parent's accumulated prefix, so routes on it keep the
+// parent's path.
+//
 // # Path parameters
 //
 // mux templates use "{name}" (already OpenAPI's syntax) and
@@ -294,24 +306,39 @@ func isSelfMethodCall(pkg *packages.Package, rhs ast.Expr, obj types.Object) boo
 	return ok && pkg.TypesInfo.Uses[ident] == obj
 }
 
-// prefixRoute reads a "<router>.PathPrefix(constTpl)" or
-// "<router>.Path(constTpl)" expression, returning the constant template
-// and the parent router expression it was called on. Declines anything
-// else.
+// prefixRoute reads the *mux.Route expression a .Subrouter() was called
+// on, returning the path segment it contributes and the parent router it
+// was built from. It recognizes "<router>.PathPrefix(constTpl)" and
+// "<router>.Path(constTpl)" (contributing that template) and
+// "<router>.NewRoute()" (contributing nothing — an empty route used to
+// hang a middleware-only subrouter off the parent, which must still
+// INHERIT the parent's accumulated prefix). Declines anything else.
 func prefixRoute(pkg *packages.Package, e ast.Expr) (prefix string, parent ast.Expr, ok bool) {
 	call, ok := e.(*ast.CallExpr)
 	if !ok {
 		return "", nil, false
 	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || (sel.Sel.Name != "PathPrefix" && sel.Sel.Name != "Path") || len(call.Args) != 1 {
-		return "", nil, false
-	}
-	tpl, ok := stringLiteral(call.Args[0])
 	if !ok {
 		return "", nil, false
 	}
-	return tpl, sel.X, true
+	switch sel.Sel.Name {
+	case "NewRoute":
+		if len(call.Args) != 0 {
+			return "", nil, false
+		}
+		return "", sel.X, true
+	case "PathPrefix", "Path":
+		if len(call.Args) != 1 {
+			return "", nil, false
+		}
+		tpl, ok := stringLiteral(call.Args[0])
+		if !ok {
+			return "", nil, false
+		}
+		return tpl, sel.X, true
+	}
+	return "", nil, false
 }
 
 // subrouterPrefix resolves the accumulated path prefix of the router
@@ -549,6 +576,17 @@ func resolveHandler(pkg *packages.Package, e ast.Expr, decls map[types.Object]as
 		return expr.Sel.Name, rd.Decl, rd.File, o, nil, o != nil
 	case *ast.FuncLit:
 		return "", nil, nil, nil, expr, true
+	case *ast.CallExpr:
+		// The handler is produced by a factory call returning http.Handler
+		// — a free function (made()) or a method
+		// (controller.build()), the idiom of returning a handler
+		// already wrapped in middleware. Recognize the route via the
+		// callee's own name and object; the factory's body is where body
+		// inference then looks. (A call that instead wraps a handler
+		// argument was already unwrapped by unwrapToHandler above.)
+		if isHTTPHandlerShaped(pkg.TypesInfo.TypeOf(expr)) {
+			return resolveHandler(pkg, expr.Fun, decls)
+		}
 	}
 	return "", nil, nil, nil, nil, false
 }

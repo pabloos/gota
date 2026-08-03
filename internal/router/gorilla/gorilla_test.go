@@ -147,6 +147,29 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
+	t.Run("a NewRoute().Subrouter() inherits the parent prefix", func(t *testing.T) {
+		if _, ok := got["GET /api/v1/inherited"]; !ok {
+			t.Errorf("routes = %+v, missing GET /api/v1/inherited (NewRoute() must inherit, not drop, the prefix)", got)
+		}
+	})
+
+	t.Run("a factory-call handler is recognized, named by the factory", func(t *testing.T) {
+		r, ok := got["GET /made"]
+		if !ok {
+			t.Fatalf("routes = %+v, missing GET /made (Handle with a function-call handler)", got)
+		}
+		if r.HandlerName != "makeHandler" {
+			t.Errorf("route /made: HandlerName = %q, want the factory name makeHandler", r.HandlerName)
+		}
+		m, ok := got["POST /from-method"]
+		if !ok {
+			t.Fatalf("routes = %+v, missing POST /from-method (Handle with a method-call handler)", got)
+		}
+		if m.HandlerName != "build" {
+			t.Errorf("route /from-method: HandlerName = %q, want the factory method name build", m.HandlerName)
+		}
+	})
+
 	t.Run("a reassigned subrouter variable is declined", func(t *testing.T) {
 		for key := range got {
 			if key == "GET /first/reassigned" || key == "GET /second/reassigned" || key == "GET /reassigned" {

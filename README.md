@@ -75,16 +75,20 @@ the returned `*mux.Route` — anywhere in the builder chain
 every method, like a method-less `net/http` pattern. Subrouters carry a
 prefix by variable identity (`s := r.PathPrefix("/api/v1").Subrouter()`
 then `s.HandleFunc("/users", H)` → `/api/v1/users`), transitively and
-inline-chained. A `{id:[0-9]+}` constraint (and a `{rest:.*}` catch-all)
-degrades to the bare `{id}` / `{rest}`. The handler passed to
-`Handle`/`HandleFunc` is commonly the real handler wrapped in
-middleware — `r.Handle("/x", handlers.LoggingHandler(os.Stdout, H))`,
-`cors(opts)(H)`, `authMiddleware(H)` — and body inference sees through it
-by following the one argument at each layer whose type is
-`http.Handler`-shaped, down to the real handler. Router-level `r.Use(mw)`
-doesn't wrap a specific handler and is irrelevant to inference. The split
-builder form (`r.Path("/x").HandlerFunc(H)`), a reassigned subrouter
-variable, and a non-constant method or path are declined.
+inline-chained; a `NewRoute().Subrouter()` (a middleware-only subrouter)
+adds no segment but inherits the parent's prefix. A `{id:[0-9]+}`
+constraint (and a `{rest:.*}` catch-all) degrades to the bare `{id}` /
+`{rest}`. The handler passed to `Handle`/`HandleFunc` is commonly the real
+handler wrapped in middleware — `r.Handle("/x",
+handlers.LoggingHandler(os.Stdout, H))`, `cors(opts)(H)`,
+`authMiddleware(H)` — and body inference sees through it by following the
+one argument at each layer whose type is `http.Handler`-shaped, down to
+the real handler. A handler produced by a factory call returning
+`http.Handler` — `r.Handle("/x", controller.build())` — is
+recognized too, named by the factory. Router-level `r.Use(mw)` doesn't
+wrap a specific handler and is irrelevant to inference. The split builder
+form (`r.Path("/x").HandlerFunc(H)`), a reassigned subrouter variable, and
+a non-constant method or path are declined.
 
 Chi's `Route`/`Group` nesting is followed to arbitrary depth,
 accumulating the real path prefix (`r.Route("/users", func(r
