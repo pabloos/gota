@@ -6,6 +6,42 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.3.0]
+
+A fourth router and a body-inference robustness fix, both driven by
+running gota against a large real gorilla/mux API (gophish).
+
+### Routers
+
+- **gorilla/mux router plugin** (`github.com/gorilla/mux`):
+  `r.HandleFunc`/`r.Handle` registrations, with the HTTP methods taken
+  from a `.Methods()` chained onto the returned `*mux.Route` (anywhere in
+  the builder chain; no `.Methods()` matches every method). Subrouters
+  carry a prefix by variable identity
+  (`s := r.PathPrefix("/api/v1").Subrouter()`), transitively and
+  inline-chained; an identity-preserving self-reconfiguration
+  (`root = root.StrictSlash(true)`) is not mistaken for an ambiguous
+  reassignment. A `{name:regex}` constraint and a `{rest:.*}` catch-all
+  degrade to the bare `{name}`/`{rest}`. gorilla handlers are plain
+  net/http, so it reuses `inference.NetHTTP()` with no dialect of its own.
+- **Middleware indirection**: the handler passed to `Handle`/`HandleFunc`
+  is commonly the real handler wrapped in middleware, so the gorilla
+  plugin unwraps it type-aware — following the one argument at each layer
+  whose type is `http.Handler`-shaped — through a single-arg wrapper, a
+  multi-argument middleware (`handlers.LoggingHandler(out, H)`), and a
+  curried one (`cors(opts)(H)`), down to the real handler for body
+  inference.
+
+### Inference
+
+- A handler whose response type is a struct **declared inside the
+  function** (a common real-world shape) no longer errors the entire
+  document. Body inference previously emitted a `$ref` to it that
+  `ResolveSchemaRefs` — which only looks up package-scope types — couldn't
+  resolve; such a type now degrades to a generic `{type: object}` schema
+  (a package-level type, including an instantiated generic, still gets a
+  `$ref`).
+
 ## [0.2.0]
 
 Multi-framework routing and richer handler resolution. Every router
