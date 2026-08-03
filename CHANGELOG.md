@@ -6,6 +6,35 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.3.1]
+
+Fixes to the gorilla/mux plugin and to cross-module type resolution,
+each with an isolated reproducer.
+
+### Fixed
+
+- **gorilla/mux: a factory-call handler is recognized.** A handler that
+  is a call returning `http.Handler` — a free function (`Handle(p,
+  made())`) or a method (`Handle(p, ct.build())`), the idiom of returning
+  a handler already wrapped in middleware — was silently dropped. The
+  route is now recognized and named by the factory.
+- **gorilla/mux: `NewRoute().Subrouter()` inherits the prefix.** A
+  middleware-only subrouter (`sec := root.NewRoute().Subrouter()`) adds no
+  path segment but must inherit the parent's accumulated prefix; its
+  routes were emitted at the wrong (unprefixed) path.
+- **Cross-module response types resolve instead of aborting.** A handler
+  serializing a type declared in another module (a dependency, or another
+  `go.work` module) made `ResolveSchemaRefs` abort the whole document,
+  because it looked up only the analyzed root packages. It now falls back
+  to the full reachable import graph, resolving the type into a real
+  component with its fields expanded. The not-found message no longer
+  claims a `gota:` comment was involved when the `$ref` was inferred.
+- **Actionable error for a workspace-root `--dir`.** Pointing `--dir` at a
+  Go workspace root (a `go.work` with no `go.mod`) failed with
+  go/packages' cryptic "directory prefix . does not contain modules
+  listed in go.work"; it now returns a clear error to point `--dir` at one
+  of the workspace's modules.
+
 ## [0.3.0]
 
 A fourth router and a body-inference robustness fix, both driven by
