@@ -15,6 +15,7 @@ import (
 	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/chi"
 	"github.com/pabloos/gota/internal/router/gin"
+	"github.com/pabloos/gota/internal/router/gorilla"
 	"github.com/pabloos/gota/internal/router/nethttp"
 )
 
@@ -94,6 +95,7 @@ func run(args []string) error {
 			{Plugin: nethttp.New(), Dialect: inference.NetHTTP()},
 			{Plugin: chi.New(), Dialect: inference.NetHTTP()},
 			{Plugin: gin.New(), Dialect: inference.Gin()},
+			{Plugin: gorilla.New(), Dialect: inference.NetHTTP()},
 		},
 	})
 	if err != nil {
