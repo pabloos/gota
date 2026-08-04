@@ -179,11 +179,32 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
-	t.Run("mounting a *mux.Router is not emitted as an endpoint", func(t *testing.T) {
+	t.Run("mounting a subrouter variable is not emitted as an endpoint", func(t *testing.T) {
 		for key := range got {
 			if strings.Contains(key, " /mount") {
-				t.Errorf("routes = %+v, a *mux.Router mount must not become an endpoint (%s)", got, key)
+				t.Errorf("routes = %+v, a subrouter-var mount must not become an endpoint (%s)", got, key)
 			}
+		}
+	})
+
+	t.Run("a same-package constructor mount applies the prefix and dedups", func(t *testing.T) {
+		if _, ok := got["GET /mnt/widget"]; !ok {
+			t.Errorf("routes = %+v, missing GET /mnt/widget (Handle mount of a constructor)", got)
+		}
+		if _, ok := got["GET /strip/widget"]; !ok {
+			t.Errorf("routes = %+v, missing GET /strip/widget (StripPrefix mount of a constructor)", got)
+		}
+		if _, ok := got["GET /widget"]; ok {
+			t.Errorf("routes = %+v, a mounted constructor's routes must not be emitted standalone at /widget", got)
+		}
+		var mnt int
+		for _, r := range routes {
+			if r.Path == "/mnt/widget" {
+				mnt++
+			}
+		}
+		if mnt != 1 {
+			t.Errorf("GET /mnt/widget emitted %d times, want 1 (the two Handle mounts must dedup)", mnt)
 		}
 	})
 

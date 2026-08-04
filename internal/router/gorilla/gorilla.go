@@ -65,16 +65,23 @@
 //
 // # Mounts
 //
-// A Handle whose handler is itself a *mux.Router is a sub-router mount,
-// not an endpoint: it's declined rather than emitted as a catch-all
-// operation (which would just duplicate the sub-router's own routes,
-// including mux's "root.Handle("/api/{rest:.*}", sub)" subpath idiom).
-// The sub-router's routes are extracted where they're registered.
-// Propagating a mount's prefix onto those routes when the sub-router is
-// built in a DIFFERENT package (root.PathPrefix(p).Handler(
-// http.StripPrefix(p, pkg.NewController().Router()))) is the cross-package
-// mount gap — the mount site is invisible to a single-package Extract, so
-// such routes surface at the prefix they carry themselves, the same
+// A sub-router mounted on another router has the mount's path prefix
+// applied to its own routes, for a same-package constructor (a zero-arg
+// func returning *mux.Router), via either idiom:
+//
+//	root.Handle("/v2", ctor())                       // and mux's
+//	root.Handle("/v2/{rest:.*}", ctor())             //   subpath idiom (deduped)
+//	root.PathPrefix("/v2").Handler(http.StripPrefix("/v2", ctor()))
+//
+// The constructor is walked once per distinct mount prefix (collectMounts)
+// and NOT standalone, so its routes appear under the prefix they're
+// mounted at, not unprefixed. A Handle whose handler is a *mux.Router that
+// ISN'T a followable constructor (a plain variable, whose routes are
+// already extracted where they're registered) is declined as an endpoint
+// rather than emitted as a catch-all that would duplicate them. Mounting a
+// constructor declared in a DIFFERENT package is the cross-package mount
+// gap — the constructor body is invisible to a single-package Extract, so
+// those routes surface at the prefix they carry themselves, the same
 // boundary as chi's cross-package Mount.
 //
 // Known, deliberate v1 gaps (declined, not guessed):
@@ -140,8 +147,110 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
 	subrouterDefs, declined := collectSubrouterDefs(pkg)
 	methodSpecs := collectMethods(pkg)
+	mounts := collectMounts(pkg, subrouterDefs, declined, funcDecls)
+
+	mounted := map[types.Object]bool{}
+	for _, m := range mounts {
+		mounted[m.ctor] = true
+	}
 
 	var routes []router.Route
+	// Every top-level function's routes at the empty mount prefix — except a
+	// sub-router constructor that IS mounted elsewhere, whose routes are
+	// emitted (possibly several times, under each mount prefix) by the mount
+	// pass below rather than once, standalone, at the unprefixed path.
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			if obj := pkg.TypesInfo.Defs[fd.Name]; obj != nil && mounted[obj] {
+				continue
+			}
+			routes = append(routes, extractFromBody(pkg, fd.Body, "", subrouterDefs, declined, methodSpecs, funcDecls)...)
+		}
+	}
+	// Mounted sub-router constructors, each walked at its mount prefix.
+	// Dedup (ctor, prefix) so mux's two-Handle subpath idiom
+	// (Handle("/x", sub) + Handle("/x/{rest:.*}", sub)) doesn't double-emit.
+	seen := map[mountKey]bool{}
+	for _, m := range mounts {
+		fd, ok := funcDecls[m.ctor]
+		if !ok || fd.Decl == nil || fd.Decl.Body == nil {
+			continue
+		}
+		if seen[mountKey{m.ctor, m.prefix}] {
+			continue
+		}
+		seen[mountKey{m.ctor, m.prefix}] = true
+		routes = append(routes, extractFromBody(pkg, fd.Decl.Body, m.prefix, subrouterDefs, declined, methodSpecs, funcDecls)...)
+	}
+	return routes, nil
+}
+
+// extractFromBody walks every HandleFunc/Handle registration in body,
+// building routes at mountPrefix (empty for a normally-registered route;
+// the mount's prefix when body is a mounted sub-router constructor).
+func extractFromBody(pkg *packages.Package, body ast.Node, mountPrefix string, subDefs map[types.Object]subrouterDef, declined map[types.Object]bool, specs map[*ast.CallExpr]methodSpec, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
+	var routes []router.Route
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || (sel.Sel.Name != "HandleFunc" && sel.Sel.Name != "Handle") {
+			return true
+		}
+		if !isGorillaRouterCall(pkg, sel) {
+			return true
+		}
+		routes = append(routes, extractRoute(pkg, call, sel, mountPrefix, subDefs, declined, specs, funcDecls)...)
+		return true
+	})
+	return routes
+}
+
+// mountKey dedups a (constructor, prefix) mount so the same sub-router
+// mounted at one prefix through more than one call site is walked once.
+type mountKey struct {
+	ctor   types.Object
+	prefix string
+}
+
+// mount is a sub-router constructor mounted at a path prefix: the
+// constructor's own routes are emitted under prefix.
+type mount struct {
+	ctor   types.Object
+	prefix string
+}
+
+// collectMounts finds every place a same-package sub-router constructor
+// (a zero-argument func returning *mux.Router) is mounted on another
+// router, and the prefix it's mounted at. Two idioms are recognized:
+//
+//	root.Handle("/x", ctor())                                 // or a variable holding ctor()
+//	root.Handle("/x/{rest:.*}", ctor())                       // mux's subpath-match idiom -> same "/x" prefix
+//	root.PathPrefix("/x").Handler(http.StripPrefix("/x", ctor()))
+//
+// The constructor's routes are then emitted under that prefix by Extract
+// (and NOT standalone at their unprefixed path). Mounting a constructor
+// declared in a DIFFERENT package can't be followed by a single-package
+// Extract and is left to surface at its own prefix, the same cross-package
+// boundary as chi's Mount.
+func collectMounts(pkg *packages.Package, subDefs map[types.Object]subrouterDef, declined map[types.Object]bool, funcDecls map[types.Object]astutil.FuncDeclInfo) []mount {
+	assigns := singleAssignments(pkg)
+	var mounts []mount
+	add := func(ctor types.Object, base, rawPrefix string, baseOK bool) {
+		if ctor == nil || !baseOK {
+			return
+		}
+		prefix, ok := normalizePath(joinPath(base, rawPrefix))
+		if ok {
+			mounts = append(mounts, mount{ctor: ctor, prefix: prefix})
+		}
+	}
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -149,17 +258,165 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || (sel.Sel.Name != "HandleFunc" && sel.Sel.Name != "Handle") {
+			if !ok || !isGorillaRouteOrRouterCall(pkg, sel) {
 				return true
 			}
-			if !isGorillaRouterCall(pkg, sel) {
-				return true
+			switch sel.Sel.Name {
+			case "Handle": // X.Handle(pathLit, ctor()/var)
+				if len(call.Args) < 2 || !isGorillaNamedType(pkg.TypesInfo.TypeOf(call.Args[1]), "Router") {
+					return true
+				}
+				ctor := resolveMountConstructor(pkg, call.Args[1], assigns, funcDecls)
+				rawPath, ok := stringLiteral(call.Args[0])
+				if !ok {
+					return true
+				}
+				base, baseOK := subrouterPrefix(pkg, sel.X, subDefs, declined, map[types.Object]bool{})
+				add(ctor, base, stripCatchAllSuffix(rawPath), baseOK)
+			case "Handler": // X.PathPrefix(pLit).Handler(http.StripPrefix(_, ctor()))
+				if len(call.Args) != 1 {
+					return true
+				}
+				tpl, parent, ok := prefixRoute(pkg, sel.X)
+				if !ok {
+					return true
+				}
+				routerArg, ok := stripPrefixRouterArg(pkg, call.Args[0])
+				if !ok {
+					return true
+				}
+				ctor := resolveMountConstructor(pkg, routerArg, assigns, funcDecls)
+				base, baseOK := subrouterPrefix(pkg, parent, subDefs, declined, map[types.Object]bool{})
+				add(ctor, base, tpl, baseOK)
 			}
-			routes = append(routes, extractRoute(pkg, call, sel, subrouterDefs, declined, methodSpecs, funcDecls)...)
 			return true
 		})
 	}
-	return routes, nil
+	return mounts
+}
+
+// resolveMountConstructor resolves e to a same-package sub-router
+// constructor object: a direct "ctor()" call (zero args, returning
+// *mux.Router), or a variable assigned once from such a call. Returns nil
+// for anything else (including a cross-package constructor, absent from
+// funcDecls).
+func resolveMountConstructor(pkg *packages.Package, e ast.Expr, assigns map[types.Object]ast.Expr, funcDecls map[types.Object]astutil.FuncDeclInfo) types.Object {
+	switch x := e.(type) {
+	case *ast.CallExpr:
+		if len(x.Args) != 0 {
+			return nil
+		}
+		ident, ok := x.Fun.(*ast.Ident)
+		if !ok {
+			return nil
+		}
+		obj := pkg.TypesInfo.Uses[ident]
+		if obj == nil {
+			return nil
+		}
+		sig, ok := obj.Type().(*types.Signature)
+		if !ok || sig.Results().Len() != 1 || !isGorillaNamedType(sig.Results().At(0).Type(), "Router") {
+			return nil
+		}
+		if _, ok := funcDecls[obj]; !ok {
+			return nil // cross-package constructor: not followable here
+		}
+		return obj
+	case *ast.Ident:
+		obj := pkg.TypesInfo.Uses[x]
+		if obj == nil {
+			return nil
+		}
+		rhs, ok := assigns[obj]
+		if !ok {
+			return nil
+		}
+		return resolveMountConstructor(pkg, rhs, assigns, funcDecls)
+	}
+	return nil
+}
+
+// stripPrefixRouterArg reads an "http.StripPrefix(_, routerArg)" call,
+// returning routerArg when it's a *mux.Router (the mounted sub-router).
+func stripPrefixRouterArg(pkg *packages.Package, e ast.Expr) (ast.Expr, bool) {
+	call, ok := e.(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 {
+		return nil, false
+	}
+	if !isPkgFuncCall(pkg, call.Fun, "net/http", "StripPrefix") {
+		return nil, false
+	}
+	if !isGorillaNamedType(pkg.TypesInfo.TypeOf(call.Args[1]), "Router") {
+		return nil, false
+	}
+	return call.Args[1], true
+}
+
+// isPkgFuncCall reports whether fun is a reference to pkgPath.name (e.g.
+// http.StripPrefix).
+func isPkgFuncCall(pkg *packages.Package, fun ast.Expr, pkgPath, name string) bool {
+	sel, ok := fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	pn, ok := pkg.TypesInfo.Uses[ident].(*types.PkgName)
+	return ok && pn.Imported().Path() == pkgPath
+}
+
+// stripCatchAllSuffix drops a trailing "/{name:.*}" catch-all segment —
+// mux's subpath-match idiom (Handle("/x/{rest:.*}", r) alongside
+// Handle("/x", r)), whose real mount prefix is "/x".
+func stripCatchAllSuffix(path string) string {
+	i := strings.LastIndex(path, "/")
+	if i < 0 {
+		return path
+	}
+	last := path[i+1:]
+	if strings.HasPrefix(last, "{") && strings.HasSuffix(last, "}") && strings.Contains(last, ":.*") {
+		return path[:i]
+	}
+	return path
+}
+
+// singleAssignments maps each variable assigned EXACTLY once (either
+// ":=" or "=") to its right-hand side — enough to trace "sub := ctor()"
+// to the constructor call. A variable assigned more than once is omitted
+// (ambiguous).
+func singleAssignments(pkg *packages.Package) map[types.Object]ast.Expr {
+	rhs := map[types.Object]ast.Expr{}
+	count := map[types.Object]int{}
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+				return true
+			}
+			ident, ok := assign.Lhs[0].(*ast.Ident)
+			if !ok {
+				return true
+			}
+			obj := pkg.TypesInfo.Defs[ident]
+			if obj == nil {
+				obj = pkg.TypesInfo.Uses[ident]
+			}
+			if obj == nil {
+				return true
+			}
+			count[obj]++
+			rhs[obj] = assign.Rhs[0]
+			return true
+		})
+	}
+	for obj, c := range count {
+		if c > 1 {
+			delete(rhs, obj)
+		}
+	}
+	return rhs
 }
 
 // methodSpec records what a .Methods() chained onto a registration
@@ -177,7 +434,7 @@ type methodSpec struct {
 // (from the receiver subrouter), path, methods (from a chained
 // .Methods(), else every method), and handler. Declines (nil) on any
 // unresolvable piece.
-func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorExpr, subDefs map[types.Object]subrouterDef, declined map[types.Object]bool, specs map[*ast.CallExpr]methodSpec, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
+func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorExpr, mountPrefix string, subDefs map[types.Object]subrouterDef, declined map[types.Object]bool, specs map[*ast.CallExpr]methodSpec, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
 	if len(call.Args) < 2 {
 		return nil
 	}
@@ -189,7 +446,10 @@ func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorEx
 	if !ok {
 		return nil
 	}
-	path, ok := normalizePath(joinPath(prefix, rawPath))
+	// mountPrefix is the outer prefix a sub-router constructor is mounted
+	// at (empty for a normally-registered route); the receiver's own
+	// subrouter prefix nests inside it.
+	path, ok := normalizePath(joinPath(joinPath(mountPrefix, prefix), rawPath))
 	if !ok {
 		return nil
 	}

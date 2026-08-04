@@ -9,8 +9,9 @@
 // identity-preserving self-reconfiguration (r = r.StrictSlash(true)), a
 // "{id:regex}" param, a "{rest:.*}" catch-all, an inline func literal
 // handler, a router-level .Use) plus the deliberately-declined shapes (a
-// *mux.Router mount not emitted as an endpoint, a
-// reassigned
+// *mux.Router-variable mount not emitted as an endpoint, a same-package
+// sub-router constructor mounted with a prefix via Handle and via
+// http.StripPrefix, a reassigned
 // subrouter variable, a non-constant .Methods(), the split
 // .Path().HandlerFunc() builder form).
 package fixture
@@ -65,11 +66,22 @@ func Register() *mux.Router {
 
 	r.PathPrefix("/inline").Subrouter().HandleFunc("/thing", InlineThing).Methods("GET") // inline chained
 
-	// Mounting a *mux.Router (here the api subrouter, whose routes are
-	// already extracted) is not an endpoint: no /mount route is emitted,
-	// including mux's "{_dummy:.*}" subpath idiom.
+	// Mounting a subrouter VARIABLE whose routes are already extracted
+	// elsewhere (api) is not an endpoint and not a followable constructor
+	// mount: no /mount route is emitted, including mux's "{_dummy:.*}"
+	// subpath idiom.
 	r.Handle("/mount", api)
 	r.Handle("/mount/{_dummy:.*}", api)
+
+	// Mounting a same-package sub-router CONSTRUCTOR applies the mount
+	// prefix to its routes: subEndpoints()'s "/widget" appears under both
+	// "/mnt" (Handle with the router, the "{rest:.*}" subpath idiom
+	// deduped) and "/strip" (the http.StripPrefix idiom), and NOT
+	// standalone at the bare "/widget".
+	mnt := subEndpoints()
+	r.Handle("/mnt", mnt)
+	r.Handle("/mnt/{rest:.*}", mnt)
+	r.PathPrefix("/strip").Handler(http.StripPrefix("/strip", subEndpoints()))
 
 	// Declined shapes.
 	sub := r.PathPrefix("/first").Subrouter()
@@ -84,6 +96,14 @@ func Register() *mux.Router {
 }
 
 func methodName() string { return "GET" }
+
+// subEndpoints is a same-package sub-router constructor: its routes are
+// emitted under each mount prefix, not standalone.
+func subEndpoints() *mux.Router {
+	sr := mux.NewRouter()
+	sr.HandleFunc("/widget", WidgetHandler).Methods("GET")
+	return sr
+}
 
 // requireAuth is a single-argument middleware wrapper.
 func requireAuth(next http.Handler) http.Handler { return next }
@@ -125,6 +145,7 @@ func ListProducts(w http.ResponseWriter, r *http.Request)      {}
 func AdminStats(w http.ResponseWriter, r *http.Request)        {}
 func InlineThing(w http.ResponseWriter, r *http.Request)       {}
 func InheritedHandler(w http.ResponseWriter, r *http.Request)  {}
+func WidgetHandler(w http.ResponseWriter, r *http.Request)     {}
 func ReassignedHandler(w http.ResponseWriter, r *http.Request) {}
 func DynamicHandler(w http.ResponseWriter, r *http.Request)    {}
 func BuilderHandler(w http.ResponseWriter, r *http.Request)    {}

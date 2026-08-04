@@ -86,9 +86,14 @@ one argument at each layer whose type is `http.Handler`-shaped, down to
 the real handler. A handler produced by a factory call returning
 `http.Handler` — `r.Handle("/x", controller.build())` — is
 recognized too, named by the factory. Router-level `r.Use(mw)` doesn't
-wrap a specific handler and is irrelevant to inference. The split builder
-form (`r.Path("/x").HandlerFunc(H)`), a reassigned subrouter variable, and
-a non-constant method or path are declined.
+wrap a specific handler and is irrelevant to inference. A same-package
+sub-router constructor (a zero-arg `func() *mux.Router`) mounted on
+another router has the mount prefix applied to its routes — via
+`root.Handle("/v2", ctor())` (and mux's `"/v2/{rest:.*}"` subpath idiom,
+deduped) or `root.PathPrefix("/v2").Handler(http.StripPrefix("/v2",
+ctor()))`. The split builder form (`r.Path("/x").HandlerFunc(H)`), a
+reassigned subrouter variable, and a non-constant method or path are
+declined.
 
 Chi's `Route`/`Group` nesting is followed to arbitrary depth,
 accumulating the real path prefix (`r.Route("/users", func(r
@@ -439,7 +444,7 @@ router's API:
 | Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
 | Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a |
 | Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
-| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix | declined: no recoverable prefix for a `*mux.Router` parameter |
+| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
 `internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`,
