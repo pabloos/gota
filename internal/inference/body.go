@@ -99,10 +99,23 @@ import (
 // has no effect (cmap is built from decl's own file, and a shared
 // helper has no single caller to scope a skip to anyway).
 func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo, d Dialect, ambiguous map[string]bool) {
+	DetectBodyWithRoots(op, decl, info, cmap, funcIndex, d, ambiguous, nil)
+}
+
+// DetectBodyWithRoots is DetectBody plus roots — the set of analyzed root
+// package import paths (see RootPaths). A detected response/request type
+// declared OUTSIDE those roots (a dependency, or another go.work module)
+// is package-qualified in its component name (componentName), so it
+// resolves uniquely by its own package instead of colliding on a bare
+// name with an unrelated same-named type elsewhere in the reachable graph.
+// generate.Run passes roots; DetectBody passes nil, meaning "treat every
+// type as a root" (bare names) — the correct standalone default when the
+// caller doesn't distinguish roots from dependencies.
+func DetectBodyWithRoots(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap ast.CommentMap, funcIndex map[types.Object]astutil.FuncDeclInfo, d Dialect, ambiguous, roots map[string]bool) {
 	if op == nil || decl == nil || decl.Body == nil || info == nil || d == nil {
 		return
 	}
-	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}, dialect: d, ambiguous: ambiguous}
+	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}, dialect: d, ambiguous: ambiguous, roots: roots}
 
 	// When decl is a handler factory — func(...) http.Handler returning an
 	// inline handler, possibly wrapped in middleware — the request/response
@@ -114,7 +127,7 @@ func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap 
 		// No decode of the body in the handler itself — but a factory may
 		// bind it in a generic middleware (Chain(BindJSON[Req])(...)),
 		// whose type argument names the body type.
-		schema, ok = middlewareBodySchema(decl, info, ambiguous)
+		schema, ok = middlewareBodySchema(decl, info, ambiguous, roots)
 	}
 	if ok {
 		op.RequestBody = &model.RequestBody{
@@ -175,7 +188,7 @@ func handlerBody(decl *ast.FuncDecl, info *types.Info) *ast.BlockStmt {
 // counts, so ordinary value indexing (arr[i]) and non-struct type
 // parameters (Cache[string]) are ignored. Best-effort, like all body
 // inference: a "gota:" comment always overrides it.
-func middlewareBodySchema(decl *ast.FuncDecl, info *types.Info, ambiguous map[string]bool) (*model.Schema, bool) {
+func middlewareBodySchema(decl *ast.FuncDecl, info *types.Info, ambiguous, roots map[string]bool) (*model.Schema, bool) {
 	if !funcReturnsHTTPHandler(decl.Type, info) {
 		return nil, false
 	}
@@ -205,7 +218,7 @@ func middlewareBodySchema(decl *ast.FuncDecl, info *types.Info, ambiguous map[st
 				if tv, ok := info.Types[ta]; !ok || !tv.IsType() {
 					continue // a value index (arr[i]), not a type argument
 				}
-				if s, ok := shallowRefSchema(info.TypeOf(ta), ambiguous); ok && isNamedStructType(info.TypeOf(ta)) {
+				if s, ok := shallowRefSchema(info.TypeOf(ta), ambiguous, roots); ok && isNamedStructType(info.TypeOf(ta)) {
 					schema = s
 					return false
 				}
@@ -339,6 +352,7 @@ type evalCtx struct {
 	visiting  map[types.Object]bool // every helper already in the current follow chain, for cycle detection
 	dialect   Dialect               // the recognizer set in effect, constant across the whole walk (followed frames inherit it)
 	ambiguous map[string]bool       // schema names to package-qualify (see AmbiguousSchemaNames), constant across the walk
+	roots     map[string]bool       // analyzed root package import paths; a type outside them is a dependency, package-qualified (see componentName), constant across the walk
 }
 
 // boundExpr is a followed helper's parameter binding: the expression
@@ -763,10 +777,10 @@ func constIntArg(e ast.Expr, ctx *evalCtx) (int, bool) {
 // reports false, except when it's a map's *element* type: see the Map
 // case below for why that specific failure degrades instead of
 // propagating.
-func shallowRefSchema(t types.Type, ambiguous map[string]bool) (*model.Schema, bool) {
+func shallowRefSchema(t types.Type, ambiguous, roots map[string]bool) (*model.Schema, bool) {
 	switch tt := t.(type) {
 	case *types.Pointer:
-		return shallowRefSchema(tt.Elem(), ambiguous)
+		return shallowRefSchema(tt.Elem(), ambiguous, roots)
 	case *types.Named:
 		if _, isStruct := tt.Underlying().(*types.Struct); !isStruct {
 			return nil, false
@@ -783,15 +797,15 @@ func shallowRefSchema(t types.Type, ambiguous map[string]bool) (*model.Schema, b
 		if obj := tt.Obj(); obj.Pkg() == nil || obj.Pkg().Scope().Lookup(obj.Name()) != obj {
 			return &model.Schema{Type: "object"}, true
 		}
-		return &model.Schema{Ref: schemaRefPrefix + componentName(tt, ambiguous)}, true
+		return &model.Schema{Ref: schemaRefPrefix + componentName(tt, ambiguous, roots)}, true
 	case *types.Slice:
-		item, ok := shallowRefSchema(tt.Elem(), ambiguous)
+		item, ok := shallowRefSchema(tt.Elem(), ambiguous, roots)
 		if !ok {
 			return nil, false
 		}
 		return &model.Schema{Type: "array", Items: item}, true
 	case *types.Array:
-		item, ok := shallowRefSchema(tt.Elem(), ambiguous)
+		item, ok := shallowRefSchema(tt.Elem(), ambiguous, roots)
 		if !ok {
 			return nil, false
 		}
@@ -807,7 +821,7 @@ func shallowRefSchema(t types.Type, ambiguous map[string]bool) (*model.Schema, b
 		// (schemaForType) never fails here either, so propagating this
 		// one failure would make gota worse at exactly the case that
 		// motivated adding Map support in the first place.
-		elem, _ := shallowRefSchema(tt.Elem(), ambiguous)
+		elem, _ := shallowRefSchema(tt.Elem(), ambiguous, roots)
 		return &model.Schema{Type: "object", AdditionalProperties: elem}, true
 	case *types.Basic:
 		if tt.Kind() == types.UntypedNil || tt.Kind() == types.Invalid {
@@ -838,7 +852,7 @@ func valueSchema(e ast.Expr, ctx *evalCtx) (*model.Schema, bool) {
 	if t == nil {
 		return nil, false
 	}
-	return shallowRefSchema(t, ctx.ambiguous)
+	return shallowRefSchema(t, ctx.ambiguous, ctx.roots)
 }
 
 // mapLiteralSchema converts lit, a map composite literal, into an inline

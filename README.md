@@ -216,14 +216,17 @@ detected response (e.g. an unpolished error path) without affecting the
 rest of the handler's inferred responses — this only applies to response
 detection, not request body detection.
 
-A type name declared in more than one analyzed package is disambiguated
-automatically: an inferred `$ref` is package-qualified (`author.Widget` /
-`book.Widget`), and a hand-written `$ref` can qualify the name the same
-way. A bare name that still can't be resolved to a single type — an
-inferred reference to a dependency type whose name collides across the
-reachable graph, or a `$ref` typo — never aborts the document: gota emits
-that one reference as a generic `{type: object}` (warning on stderr) and
-generates the rest of the spec.
+Schema component names are disambiguated automatically. A type name
+declared in more than one analyzed package is package-qualified
+(`author.Widget` / `book.Widget`), and so is a type from a **dependency**
+or another `go.work` module (`repository.Event`) — so it resolves by its
+own package and its real fields are expanded, rather than colliding on a
+bare name with an unrelated same-named type elsewhere in the reachable
+graph (a hand-written `$ref` can qualify a name the same way). A reference
+that genuinely can't be resolved to a single type — a `$ref` typo, or a
+qualified name that's still ambiguous — never aborts the document: gota
+emits that one reference as a generic `{type: object}` (warning on stderr)
+and generates the rest of the spec.
 
 A handler can be registered from a different package than the one that
 declares it (`mux.HandleFunc("/x", handlers.GetUser)`) — gota resolves

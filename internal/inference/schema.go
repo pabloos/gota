@@ -68,7 +68,7 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous 
 		return true
 	}, nil)
 
-	reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, reachable: reachable}
+	reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, roots: RootPaths(pkgs), reachable: reachable}
 	var unresolved []string
 	for name := range names {
 		if err := reg.resolveByName(name, pkgs); err != nil {
@@ -159,6 +159,21 @@ func AmbiguousSchemaNames(pkgs []*packages.Package) map[string]bool {
 	return ambiguous
 }
 
+// RootPaths returns the set of import paths of the analyzed root packages
+// (pkgs). componentName qualifies a type whose package is NOT in this set
+// (a dependency or other-module type), so it resolves uniquely by package
+// instead of by a bare name that can collide across the reachable graph.
+// generate.Run computes it once and passes it to DetectBodyWithRoots;
+// ResolveSchemaRefs derives it the same way from the same pkgs, so
+// emission and resolution agree on which names are qualified.
+func RootPaths(pkgs []*packages.Package) map[string]bool {
+	roots := make(map[string]bool, len(pkgs))
+	for _, pkg := range pkgs {
+		roots[pkg.PkgPath] = true
+	}
+	return roots
+}
+
 func refName(ref string) (string, bool) {
 	name, ok := strings.CutPrefix(ref, schemaRefPrefix)
 	if !ok || name == "" {
@@ -209,6 +224,7 @@ type registry struct {
 	schemas    map[string]*model.Schema
 	inProgress map[string]bool
 	ambiguous  map[string]bool     // names to package-qualify, see AmbiguousSchemaNames
+	roots      map[string]bool     // analyzed root package import paths; a type outside them is package-qualified (see componentName), matching what emission produced
 	origin     map[string]string   // component key -> the package path that produced it, for the collision guard
 	reachable  []*packages.Package // the analyzed roots plus every package transitively imported, for the dependency fallback
 	err        error               // first residual-collision error (two distinct types on one key), checked by ResolveSchemaRefs
@@ -256,7 +272,7 @@ func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 // the resolver (lookupPackageQualifiedType). Keying the check on the
 // bare declared name (not the "_"-composed one) is what makes a
 // colliding generic BASE qualify.
-func componentName(named *types.Named, ambiguous map[string]bool) string {
+func componentName(named *types.Named, ambiguous, roots map[string]bool) string {
 	base := named.Obj().Name()
 	name := base
 	if targs := named.TypeArgs(); targs != nil && targs.Len() == 1 {
@@ -264,10 +280,17 @@ func componentName(named *types.Named, ambiguous map[string]bool) string {
 			name = base + "_" + argNamed.Obj().Name()
 		}
 	}
-	if ambiguous[base] {
-		if pkg := named.Obj().Pkg(); pkg != nil {
-			return pkg.Name() + "." + name
-		}
+	pkg := named.Obj().Pkg()
+	// Qualify when the bare name is ambiguous among analyzed roots, OR when
+	// the type comes from a DEPENDENCY (a package outside roots): a
+	// dependency type's bare name can collide with an unrelated same-named
+	// type anywhere in the reachable graph, so qualifying it by package
+	// (repository.Event) makes it resolve uniquely via its own package
+	// (lookupPackageQualifiedType) instead of ambiguously by bare name. A
+	// nil roots (the standalone DetectBody path) qualifies only the
+	// ambiguous case — every type is treated as a root.
+	if pkg != nil && (ambiguous[base] || (roots != nil && !roots[pkg.Path()])) {
+		return pkg.Name() + "." + name
 	}
 	return name
 }
@@ -294,7 +317,7 @@ func pkgPathOf(named *types.Named) string {
 // collision on r.err and does NOT overwrite, so the loud error surfaces
 // via ResolveSchemaRefs rather than silently dropping one type's schema.
 func (r *registry) register(named *types.Named) *model.Schema {
-	name := componentName(named, r.ambiguous)
+	name := componentName(named, r.ambiguous, r.roots)
 	ref := &model.Schema{Ref: schemaRefPrefix + name}
 
 	path := pkgPathOf(named)

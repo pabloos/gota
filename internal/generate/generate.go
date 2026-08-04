@@ -66,6 +66,13 @@ func Run(opts Options) (*model.Document, error) {
 	// see inference.AmbiguousSchemaNames.
 	ambiguous := inference.AmbiguousSchemaNames(pkgs)
 
+	// roots is the set of analyzed root package paths. Body inference
+	// package-qualifies a detected type declared OUTSIDE these (a
+	// dependency or other go.work module), and ResolveSchemaRefs derives
+	// the same set from the same pkgs, so a dependency type resolves by its
+	// own package instead of colliding on a bare name in the reachable graph.
+	roots := inference.RootPaths(pkgs)
+
 	// pending holds every route's inferred (not yet merged with any
 	// "gota:" comment) Operation, so operationIDs can be disambiguated
 	// across the whole document — see disambiguateOperationIDs — before
@@ -104,7 +111,7 @@ func Run(opts Options) (*model.Document, error) {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
 				inferred := inference.Operation(route)
-				inference.DetectBody(inferred, handlerDecl, info, cmap, globalIndex, rt.Dialect, ambiguous)
+				inference.DetectBodyWithRoots(inferred, handlerDecl, info, cmap, globalIndex, rt.Dialect, ambiguous, roots)
 				pending = append(pending, pendingOperation{route: route, info: info, cmap: cmap, op: inferred})
 			}
 		}

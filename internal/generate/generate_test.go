@@ -197,27 +197,30 @@ func TestRun_CrossModuleType(t *testing.T) {
 	if !ok {
 		t.Fatalf("Responses = %+v, missing 200", clients.Get.Responses)
 	}
-	// []*Product -> an array whose items $ref the cross-module type.
+	// []*Product -> an array whose items $ref the cross-module type. Being
+	// a dependency (outside the analyzed roots), it's package-qualified as
+	// "catalog.Product" so it resolves by its own package, not a bare name.
 	items := resp.Content["application/json"].Schema.Items
-	if items == nil || items.Ref != "#/components/schemas/Product" {
-		t.Errorf("200 items schema = %+v, want $ref to Product", items)
+	if items == nil || items.Ref != "#/components/schemas/catalog.Product" {
+		t.Errorf("200 items schema = %+v, want $ref to catalog.Product", items)
 	}
-	if doc.Components == nil || doc.Components.Schemas["Product"] == nil {
-		t.Fatalf("Components = %+v, want Product resolved from the dependency module", doc.Components)
+	if doc.Components == nil || doc.Components.Schemas["catalog.Product"] == nil {
+		t.Fatalf("Components = %+v, want catalog.Product resolved from the dependency module", doc.Components)
 	}
-	if doc.Components.Schemas["Product"].Properties["name"] == nil {
-		t.Errorf("Product = %+v, want its fields expanded (name), not a bare object", doc.Components.Schemas["Product"])
+	if doc.Components.Schemas["catalog.Product"].Properties["name"] == nil {
+		t.Errorf("catalog.Product = %+v, want its fields expanded (name), not a bare object", doc.Components.Schemas["catalog.Product"])
 	}
 }
 
-// TestRun_CrossModuleAmbiguityDegrades is the regression guard for a
+// TestRun_CrossModuleAmbiguityResolves is the regression guard for a
 // production abort: a handler returns a dependency type (one.Thing) whose
 // bare name also exists in another reachable dependency (two.Thing) that
-// no handler exposes (fixture: testdata/cross-module-ambiguous). The
-// inferred bare "Thing" ref can't be uniquely resolved by name alone, but
-// that must NOT abort the whole document — it degrades to a generic object
-// and the rest of the spec is generated.
-func TestRun_CrossModuleAmbiguityDegrades(t *testing.T) {
+// no handler exposes (fixture: testdata/cross-module-ambiguous). Because
+// one.Thing is a dependency, it's package-qualified as "one.Thing" and
+// resolves by its own package — the unexposed two.Thing never enters the
+// picture, so there's no ambiguity and no abort, and the referenced type
+// is fully expanded (not degraded to a bare object).
+func TestRun_CrossModuleAmbiguityResolves(t *testing.T) {
 	dir, err := filepath.Abs("testdata/cross-module-ambiguous/api")
 	if err != nil {
 		t.Fatal(err)
@@ -230,25 +233,31 @@ func TestRun_CrossModuleAmbiguityDegrades(t *testing.T) {
 		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
 	})
 	if err != nil {
-		t.Fatalf("generate.Run must not abort on an ambiguous cross-module type, got: %v", err)
+		t.Fatalf("generate.Run must not abort on a cross-module type, got: %v", err)
 	}
 	if err := emitter.Validate(doc); err != nil {
-		t.Fatalf("emitter.Validate: %v — the degraded document must still be valid", err)
+		t.Fatalf("emitter.Validate: %v", err)
 	}
 
 	things, ok := doc.Paths["/things"]
 	if !ok {
 		t.Fatalf("doc.Paths = %+v, missing /things", doc.Paths)
 	}
-	// []*Thing -> array; its items ref was unresolvable and must degrade.
+	// []*one.Thing -> array whose items resolve to the qualified component.
 	items := things.Get.Responses["200"].Content["application/json"].Schema.Items
-	if items == nil || items.Ref != "" || items.Type != "object" {
-		t.Errorf("items schema = %+v, want a degraded {type: object}, not a dangling $ref", items)
+	if items == nil || items.Ref != "#/components/schemas/one.Thing" {
+		t.Errorf("items schema = %+v, want $ref to one.Thing", items)
 	}
-	if doc.Components != nil {
-		if _, ok := doc.Components.Schemas["Thing"]; ok {
-			t.Errorf("Components = %+v, an ambiguous bare name must not register a Thing", doc.Components.Schemas)
-		}
+	one, ok := doc.Components.Schemas["one.Thing"]
+	if !ok {
+		t.Fatalf("Components = %+v, want one.Thing resolved (its fields expanded)", doc.Components.Schemas)
+	}
+	if _, ok := one.Properties["id"]; !ok {
+		t.Errorf("one.Thing = %+v, want package one's Thing (id field)", one)
+	}
+	// The unexposed two.Thing must never be registered.
+	if _, ok := doc.Components.Schemas["two.Thing"]; ok {
+		t.Errorf("Components = %+v, the unexposed two.Thing must not be registered", doc.Components.Schemas)
 	}
 }
 
