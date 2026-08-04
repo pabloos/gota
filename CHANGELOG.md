@@ -6,6 +6,34 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.3.2]
+
+Body inference through the handler-factory + middleware idiom, and a
+gorilla/mux mount fix.
+
+### Fixed
+
+- **Inference follows a handler factory to its returned literal.** A
+  handler declared as a factory — `func(...) http.Handler` returning an
+  inline handler, on its own (`return http.HandlerFunc(func(w, r){...})`)
+  or wrapped in a middleware chain (`return Chain(mw...)(http.HandlerFunc(
+  ...))`) — produced only a bare `200`, because inference walked the
+  factory's top-level statements rather than the returned handler.
+  `DetectBody` now descends into that literal, unwrapping the middleware
+  wrapper type-aware down to the innermost func literal, and detects its
+  request body and responses.
+- **Request body from a generic middleware type argument.** When the
+  handler literal never decodes the body itself — it's bound by a generic
+  middleware in the chain (`Chain(Bind[T])(handler)`) — the request body
+  is inferred from that middleware's named-struct type argument.
+- **gorilla/mux: a `*mux.Router` handler is a mount, not an endpoint.**
+  `Handle(path, subrouter)` where the handler is a `*mux.Router` was
+  emitted as a catch-all endpoint for every method, duplicating the
+  sub-router's own routes (including mux's `Handle("/x/{rest:.*}", sub)`
+  subpath idiom). It's now recognized as a mount and declined. (Applying a
+  mount's prefix to a sub-router built in another package remains a
+  documented cross-package gap, as with chi.)
+
 ## [0.3.1]
 
 Fixes to the gorilla/mux plugin and to cross-module type resolution,
