@@ -63,6 +63,20 @@
 // direct OpenAPI equivalent) — including a "{rest:.*}" catch-all, which
 // becomes "{rest}".
 //
+// # Mounts
+//
+// A Handle whose handler is itself a *mux.Router is a sub-router mount,
+// not an endpoint: it's declined rather than emitted as a catch-all
+// operation (which would just duplicate the sub-router's own routes,
+// including mux's "root.Handle("/api/{rest:.*}", sub)" subpath idiom).
+// The sub-router's routes are extracted where they're registered.
+// Propagating a mount's prefix onto those routes when the sub-router is
+// built in a DIFFERENT package (root.PathPrefix(p).Handler(
+// http.StripPrefix(p, pkg.NewController().Router()))) is the cross-package
+// mount gap — the mount site is invisible to a single-package Extract, so
+// such routes surface at the prefix they carry themselves, the same
+// boundary as chi's cross-package Mount.
+//
 // Known, deliberate v1 gaps (declined, not guessed):
 //
 //   - The builder form that splits the path and handler across the chain
@@ -177,6 +191,17 @@ func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorEx
 	}
 	path, ok := normalizePath(joinPath(prefix, rawPath))
 	if !ok {
+		return nil
+	}
+	// A Handle whose handler is itself a *mux.Router is a sub-router MOUNT
+	// (root.Handle("/api", sub), and mux's root.Handle("/api/{rest:.*}", sub)
+	// subpath idiom), not an endpoint — a *mux.Router satisfies http.Handler
+	// but serving it means dispatching into its own routes, which are
+	// extracted where they're registered. Emitting it as an endpoint would
+	// invent a catch-all operation for every method that just duplicates
+	// those routes, so it's declined. (Applying the mount prefix to the
+	// sub-router's own routes is the cross-package Mount gap, as in chi.)
+	if isGorillaNamedType(pkg.TypesInfo.TypeOf(call.Args[1]), "Router") {
 		return nil
 	}
 	handlerName, decl, file, obj, lit, ok := resolveHandler(pkg, call.Args[1], funcDecls)

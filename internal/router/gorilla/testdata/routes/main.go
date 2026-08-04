@@ -9,6 +9,7 @@
 // identity-preserving self-reconfiguration (r = r.StrictSlash(true)), a
 // "{id:regex}" param, a "{rest:.*}" catch-all, an inline func literal
 // handler, a router-level .Use) plus the deliberately-declined shapes (a
+// *mux.Router mount not emitted as an endpoint, a
 // reassigned
 // subrouter variable, a non-constant .Methods(), the split
 // .Path().HandlerFunc() builder form).
@@ -63,6 +64,12 @@ func Register() *mux.Router {
 	r.Handle("/from-method", ct.build()).Methods("POST")
 
 	r.PathPrefix("/inline").Subrouter().HandleFunc("/thing", InlineThing).Methods("GET") // inline chained
+
+	// Mounting a *mux.Router (here the api subrouter, whose routes are
+	// already extracted) is not an endpoint: no /mount route is emitted,
+	// including mux's "{_dummy:.*}" subpath idiom.
+	r.Handle("/mount", api)
+	r.Handle("/mount/{_dummy:.*}", api)
 
 	// Declined shapes.
 	sub := r.PathPrefix("/first").Subrouter()

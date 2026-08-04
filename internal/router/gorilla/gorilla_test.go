@@ -2,6 +2,7 @@ package gorilla_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -174,6 +175,14 @@ func TestExtract(t *testing.T) {
 		for key := range got {
 			if key == "GET /first/reassigned" || key == "GET /second/reassigned" || key == "GET /reassigned" {
 				t.Errorf("routes = %+v, a reassigned subrouter var is ambiguous and must be declined", got)
+			}
+		}
+	})
+
+	t.Run("mounting a *mux.Router is not emitted as an endpoint", func(t *testing.T) {
+		for key := range got {
+			if strings.Contains(key, " /mount") {
+				t.Errorf("routes = %+v, a *mux.Router mount must not become an endpoint (%s)", got, key)
 			}
 		}
 	})
