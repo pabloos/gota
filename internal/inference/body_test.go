@@ -111,6 +111,42 @@ func TestDetectBody(t *testing.T) {
 		}
 	})
 
+	t.Run("a handler factory's returned literal is followed for request and response", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "FactoryDirectHandler")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
+		if op.RequestBody == nil {
+			t.Fatal("RequestBody not detected from the returned literal's Decode(&req)")
+		}
+		if schema := op.RequestBody.Content["application/json"].Schema; schema.Ref != schemaRefPrefix+"CreateReq" {
+			t.Errorf("RequestBody schema = %+v, want $ref to CreateReq", schema)
+		}
+		if _, ok := op.Responses["201"]; !ok {
+			t.Fatalf("Responses = %+v, missing 201 (the literal's WriteHeader/Encode)", op.Responses)
+		}
+		if schema := op.Responses["201"].Content["application/json"].Schema; schema.Ref != schemaRefPrefix+"User" {
+			t.Errorf("201 schema = %+v, want $ref to User", schema)
+		}
+	})
+
+	t.Run("a middleware-wrapped factory: response from the literal, request from the generic middleware type arg", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "FactoryChainedHandler")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
+		if op.RequestBody == nil {
+			t.Fatal("RequestBody not detected from BindJSON[CreateReq] (the literal never decodes)")
+		}
+		if schema := op.RequestBody.Content["application/json"].Schema; schema.Ref != schemaRefPrefix+"CreateReq" {
+			t.Errorf("RequestBody schema = %+v, want $ref to CreateReq from the generic middleware type arg", schema)
+		}
+		if _, ok := op.Responses["201"]; !ok {
+			t.Fatalf("Responses = %+v, missing 201 (must unwrap the middleware chain to the literal)", op.Responses)
+		}
+		if schema := op.Responses["201"].Content["application/json"].Schema; schema.Ref != schemaRefPrefix+"User" {
+			t.Errorf("201 schema = %+v, want $ref to User", schema)
+		}
+	})
+
 	t.Run("a function-local response type degrades to a generic object, not an unresolvable $ref", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "EncodeFunctionLocalType")
 		op := &model.Operation{}

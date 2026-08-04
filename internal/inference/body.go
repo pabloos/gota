@@ -104,7 +104,19 @@ func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap 
 	}
 	ctx := &evalCtx{info: info, funcIndex: funcIndex, visiting: map[types.Object]bool{}, dialect: d, ambiguous: ambiguous}
 
-	if schema, ok := firstBodySchema(decl.Body, ctx); ok {
+	// When decl is a handler factory — func(...) http.Handler returning an
+	// inline handler, possibly wrapped in middleware — the request/response
+	// idioms live in the returned literal, not decl's own statements.
+	body := handlerBody(decl, info)
+
+	schema, ok := firstBodySchema(body, ctx)
+	if !ok {
+		// No decode of the body in the handler itself — but a factory may
+		// bind it in a generic middleware (Chain(BindJSON[Req])(...)),
+		// whose type argument names the body type.
+		schema, ok = middlewareBodySchema(decl, info, ambiguous)
+	}
+	if ok {
 		op.RequestBody = &model.RequestBody{
 			Required: true,
 			Content:  map[string]model.MediaType{"application/json": {Schema: schema}},
@@ -112,7 +124,7 @@ func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap 
 	}
 
 	rc := &responseCollector{responses: map[string]model.Response{}}
-	rc.walk(decl.Body.List, http.StatusOK, ctx, cmap)
+	rc.walk(body.List, http.StatusOK, ctx, cmap)
 	if len(rc.responses) > 0 {
 		if op.Responses == nil {
 			op.Responses = map[string]model.Response{}
@@ -121,6 +133,184 @@ func DetectBody(op *model.Operation, decl *ast.FuncDecl, info *types.Info, cmap 
 			op.Responses[code] = resp
 		}
 	}
+}
+
+// handlerBody returns the block holding the actual handler logic. Usually
+// that's decl's own body, but when decl is a handler FACTORY — a
+// func(...) http.Handler that returns an inline handler, on its own
+// (return http.HandlerFunc(func(w, r){...})) or wrapped in middleware
+// (return Chain(mw...)(http.HandlerFunc(func(w, r){...}))) — the
+// request/response idioms are inside that returned literal, not decl's
+// top-level statements, so this descends to it. The wrapper is unwrapped
+// type-aware, following the one http.Handler-shaped argument at each
+// layer down to the literal.
+func handlerBody(decl *ast.FuncDecl, info *types.Info) *ast.BlockStmt {
+	if !funcReturnsHTTPHandler(decl.Type, info) {
+		return decl.Body
+	}
+	var lit *ast.FuncLit
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		if lit != nil {
+			return false
+		}
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			return true
+		}
+		lit = unwrapReturnedHandlerLit(ret.Results[0], info)
+		return lit == nil
+	})
+	if lit != nil {
+		return lit.Body
+	}
+	return decl.Body
+}
+
+// middlewareBodySchema infers the request body of a handler factory from
+// a generic middleware in its returned chain whose type argument names a
+// struct — the common "bind-and-validate" idiom, Chain(BindJSON[Req])(
+// handler), where In is the decoded body even though the handler never
+// decodes it itself. It scans only the factory's returned expression (the
+// middleware chain), and only a type ARGUMENT that is a named struct
+// counts, so ordinary value indexing (arr[i]) and non-struct type
+// parameters (Cache[string]) are ignored. Best-effort, like all body
+// inference: a "gota:" comment always overrides it.
+func middlewareBodySchema(decl *ast.FuncDecl, info *types.Info, ambiguous map[string]bool) (*model.Schema, bool) {
+	if !funcReturnsHTTPHandler(decl.Type, info) {
+		return nil, false
+	}
+	var schema *model.Schema
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		if schema != nil {
+			return false
+		}
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			return true
+		}
+		ast.Inspect(ret.Results[0], func(m ast.Node) bool {
+			if schema != nil {
+				return false
+			}
+			var typeArgs []ast.Expr
+			switch x := m.(type) {
+			case *ast.IndexExpr:
+				typeArgs = []ast.Expr{x.Index}
+			case *ast.IndexListExpr:
+				typeArgs = x.Indices
+			default:
+				return true
+			}
+			for _, ta := range typeArgs {
+				if tv, ok := info.Types[ta]; !ok || !tv.IsType() {
+					continue // a value index (arr[i]), not a type argument
+				}
+				if s, ok := shallowRefSchema(info.TypeOf(ta), ambiguous); ok && isNamedStructType(info.TypeOf(ta)) {
+					schema = s
+					return false
+				}
+			}
+			return true
+		})
+		return false // scan only the first return's expression
+	})
+	return schema, schema != nil
+}
+
+// isNamedStructType reports whether t is a named struct type (optionally
+// behind a pointer) — the shape middlewareBodySchema accepts as a body.
+func isNamedStructType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return false
+	}
+	_, ok = named.Underlying().(*types.Struct)
+	return ok
+}
+
+// funcReturnsHTTPHandler reports whether ft is a factory signature —
+// exactly one result whose type is http.Handler-shaped.
+func funcReturnsHTTPHandler(ft *ast.FuncType, info *types.Info) bool {
+	if ft.Results == nil || len(ft.Results.List) != 1 {
+		return false
+	}
+	return isHTTPHandlerType(info.TypeOf(ft.Results.List[0].Type))
+}
+
+// unwrapReturnedHandlerLit follows a returned handler expression down to
+// the inline func literal it ultimately wraps: an http.HandlerFunc(lit)
+// conversion, or a middleware call whose single http.Handler-shaped
+// argument is the (possibly further-wrapped) handler. Returns nil when no
+// literal is reached (e.g. the factory returns a named handler).
+func unwrapReturnedHandlerLit(e ast.Expr, info *types.Info) *ast.FuncLit {
+	for {
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.FuncLit:
+			return x
+		case *ast.CallExpr:
+			arg := singleHTTPHandlerArg(x, info)
+			if arg == nil {
+				return nil
+			}
+			e = arg
+		default:
+			return nil
+		}
+	}
+}
+
+// singleHTTPHandlerArg returns call's sole http.Handler-shaped argument,
+// or nil unless there's exactly one (so a middleware wrapper's handler
+// argument is followed, while its config arguments are ignored).
+func singleHTTPHandlerArg(call *ast.CallExpr, info *types.Info) ast.Expr {
+	var found ast.Expr
+	n := 0
+	for _, a := range call.Args {
+		if isHTTPHandlerType(info.TypeOf(a)) {
+			found = a
+			n++
+		}
+	}
+	if n == 1 {
+		return found
+	}
+	return nil
+}
+
+// isHTTPHandlerType reports whether t is an http.Handler, an
+// http.HandlerFunc, or a bare func(http.ResponseWriter, *http.Request).
+func isHTTPHandlerType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if named, ok := t.(*types.Named); ok {
+		if o := named.Obj(); o.Pkg() != nil && o.Pkg().Path() == "net/http" &&
+			(o.Name() == "Handler" || o.Name() == "HandlerFunc") {
+			return true
+		}
+	}
+	sig, ok := t.Underlying().(*types.Signature)
+	if !ok || sig.Params().Len() != 2 || sig.Results().Len() != 0 {
+		return false
+	}
+	p0, ok := sig.Params().At(0).Type().(*types.Named)
+	if !ok || p0.Obj().Pkg() == nil || p0.Obj().Pkg().Path() != "net/http" || p0.Obj().Name() != "ResponseWriter" {
+		return false
+	}
+	p1, ok := sig.Params().At(1).Type().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := p1.Elem().(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/http" && named.Obj().Name() == "Request"
 }
 
 // maxFollowDepth caps how many calls deep DetectBody will follow to find

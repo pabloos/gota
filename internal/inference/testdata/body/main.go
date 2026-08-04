@@ -78,6 +78,52 @@ func EncodeFunctionLocalType(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(validationEvent{Success: true})
 }
 
+// CreateReq is the request payload used by the handler-factory idioms
+// below.
+type CreateReq struct {
+	Name string `json:"name"`
+}
+
+// BindJSON is a generic body-binding middleware: its type argument names
+// the request body even when the handler itself never decodes it.
+func BindJSON[T any](next http.Handler) http.Handler { return next }
+
+// mwChain composes middleware, returning a single wrapper — the shape a
+// handler factory returns around its real handler.
+func mwChain(mw ...func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(h http.Handler) http.Handler {
+		for i := len(mw) - 1; i >= 0; i-- {
+			h = mw[i](h)
+		}
+		return h
+	}
+}
+
+// FactoryDirectHandler is a handler factory returning an inline handler
+// directly: DetectBody must follow into the returned literal and detect
+// both its decoded request body (CreateReq) and its 201 response (User).
+func FactoryDirectHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CreateReq
+		json.NewDecoder(r.Body).Decode(&req)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(User{})
+	})
+}
+
+// FactoryChainedHandler wraps the inline handler in a middleware chain.
+// The 201/User response is in the literal (reached by unwrapping the
+// wrapper); the request body is named only by the generic middleware's
+// type argument (BindJSON[CreateReq]), since the literal never decodes it.
+func FactoryChainedHandler() http.Handler {
+	return mwChain(BindJSON[CreateReq])(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(User{})
+		}),
+	)
+}
+
 func EncodeErrorThenSuccess(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		json.NewEncoder(w).Encode(ErrorResponse{Message: "bad"})
