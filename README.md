@@ -216,9 +216,14 @@ detected response (e.g. an unpolished error path) without affecting the
 rest of the handler's inferred responses — this only applies to response
 detection, not request body detection.
 
-A schema name declared in more than one analyzed package is a hard error,
-not a silent "first match wins" — gota has no `$ref` syntax to say which
-one was meant, so it refuses to guess.
+A type name declared in more than one analyzed package is disambiguated
+automatically: an inferred `$ref` is package-qualified (`author.Widget` /
+`book.Widget`), and a hand-written `$ref` can qualify the name the same
+way. A bare name that still can't be resolved to a single type — an
+inferred reference to a dependency type whose name collides across the
+reachable graph, or a `$ref` typo — never aborts the document: gota emits
+that one reference as a generic `{type: object}` (warning on stderr) and
+generates the rest of the spec.
 
 A handler can be registered from a different package than the one that
 declares it (`mux.HandleFunc("/x", handlers.GetUser)`) — gota resolves

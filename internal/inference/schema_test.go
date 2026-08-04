@@ -2,7 +2,6 @@ package inference
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -214,48 +213,50 @@ func TestResolveSchemaRefs_HandlesCycles(t *testing.T) {
 	}
 }
 
-func TestResolveSchemaRefs_UnknownTypeErrors(t *testing.T) {
+// TestResolveSchemaRefs_UnknownTypeDegrades pins that a $ref with no
+// matching Go type does NOT abort the whole document: it degrades to a
+// generic {type: object} (warning on stderr) so the rest of the spec is
+// still generated and the document stays valid (no dangling $ref).
+func TestResolveSchemaRefs_UnknownTypeDegrades(t *testing.T) {
 	pkgs := loadFixture(t, "schema_empty")
 
 	doc := docWithRef("DoesNotExist")
-	err := ResolveSchemaRefs(doc, pkgs, nil)
-	if err == nil {
-		t.Fatal("expected an error for a $ref with no matching Go type")
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
+		t.Fatalf("ResolveSchemaRefs must not abort on an unresolvable $ref, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "DoesNotExist") {
-		t.Errorf("error %q should mention the missing type name", err.Error())
+
+	s := doc.Paths["/x"].Get.Responses["200"].Content["application/json"].Schema
+	if s.Ref != "" || s.Type != "object" {
+		t.Errorf("unresolved ref = %+v, want it degraded to a bare {type: object}", s)
+	}
+	if _, ok := doc.Components.Schemas["DoesNotExist"]; ok {
+		t.Errorf("Components = %+v, an unresolvable name must not register a component", doc.Components.Schemas)
 	}
 }
 
-// TestResolveSchemaRefs_AmbiguousNameErrors pins down that a schema name
-// declared in more than one analyzed package is a hard error, not a
-// silent "first match wins" — gota has no $ref syntax to say which one
-// was meant, so guessing would risk generating the wrong schema instead
-// of failing loudly.
-func TestResolveSchemaRefs_AmbiguousNameErrors(t *testing.T) {
+// TestResolveSchemaRefs_AmbiguousNameDegrades pins that a bare $ref
+// matching a type declared in more than one package does NOT abort the
+// whole document: gota can't know which one was meant, so it degrades
+// that one reference to a generic {type: object} (warning on stderr)
+// instead of failing the entire spec. (A DISTINCT package-qualified $ref
+// per type still resolves — see TestResolveSchemaRefs_PackageQualified.)
+func TestResolveSchemaRefs_AmbiguousNameDegrades(t *testing.T) {
 	pkgs := loadFixture(t, "schema_ambiguous")
 	if len(pkgs) != 2 {
 		t.Fatalf("fixture setup: got %d packages, want 2 (a and b, each declaring User)", len(pkgs))
 	}
 
-	// A HAND-WRITTEN bare $ref to an ambiguous name still errors: gota
-	// can't know which package's User the author meant. (An INFERRED
-	// $ref for such a name is pre-qualified and never reaches this — see
-	// TestResolveSchemaRefs_PackageQualified.) The message now suggests
-	// the qualified forms the author can use instead.
 	doc := docWithRef("User")
-	err := ResolveSchemaRefs(doc, pkgs, AmbiguousSchemaNames(pkgs))
-	if err == nil {
-		t.Fatal("expected an error for a $ref matching a type declared in two packages")
+	if err := ResolveSchemaRefs(doc, pkgs, AmbiguousSchemaNames(pkgs)); err != nil {
+		t.Fatalf("ResolveSchemaRefs must not abort on an ambiguous $ref, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "User") || !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error %q should mention the ambiguous name", err.Error())
+
+	s := doc.Paths["/x"].Get.Responses["200"].Content["application/json"].Schema
+	if s.Ref != "" || s.Type != "object" {
+		t.Errorf("ambiguous ref = %+v, want it degraded to a bare {type: object}", s)
 	}
-	if !strings.Contains(err.Error(), "a.User") || !strings.Contains(err.Error(), "b.User") {
-		t.Errorf("error %q should suggest the package-qualified forms a.User / b.User", err.Error())
-	}
-	if doc.Components != nil {
-		t.Errorf("Components = %+v, want nil — an ambiguous $ref must not partially resolve", doc.Components)
+	if _, ok := doc.Components.Schemas["User"]; ok {
+		t.Errorf("Components = %+v, an ambiguous bare name must not register a component", doc.Components.Schemas)
 	}
 }
 
@@ -330,23 +331,24 @@ func TestResolveSchemaRefs_QualifiedGenericBase(t *testing.T) {
 	}
 }
 
-// TestResolveSchemaRefs_SamePackageNameCollisionErrors pins the residual
-// the qualification can't break: two packages that share a package NAME
+// TestResolveSchemaRefs_SamePackageNameCollisionDegrades pins the residual
+// that qualification can't break: two packages sharing a package NAME
 // (both "config") at different paths, each declaring Settings, both
-// qualify to "config.Settings". register's origin guard must error
-// (naming both import paths), not silently overwrite one schema with the
-// other.
-func TestResolveSchemaRefs_SamePackageNameCollisionErrors(t *testing.T) {
+// qualify to "config.Settings", so even the qualified name can't say which
+// is meant. That's non-fatal like any other unresolvable name — the
+// reference degrades to a generic object rather than aborting the document.
+func TestResolveSchemaRefs_SamePackageNameCollisionDegrades(t *testing.T) {
 	pkgs := loadFixture(t, "schema_ambiguous_samepkg")
 
 	ambiguous := AmbiguousSchemaNames(pkgs)
-	doc := docWithTwoRefs("config.Settings", "config.Settings")
-	err := ResolveSchemaRefs(doc, pkgs, ambiguous)
-	if err == nil {
-		t.Fatal("expected an error: two distinct config.Settings collide on one component key")
+	doc := docWithRef("config.Settings")
+	if err := ResolveSchemaRefs(doc, pkgs, ambiguous); err != nil {
+		t.Fatalf("ResolveSchemaRefs must not abort on an ambiguous qualified name, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "config.Settings") {
-		t.Errorf("error %q should name the colliding component", err.Error())
+
+	s := doc.Paths["/x"].Get.Responses["200"].Content["application/json"].Schema
+	if s.Ref != "" || s.Type != "object" {
+		t.Errorf("ambiguous qualified ref = %+v, want it degraded to a bare {type: object}", s)
 	}
 }
 

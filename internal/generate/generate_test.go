@@ -210,6 +210,48 @@ func TestRun_CrossModuleType(t *testing.T) {
 	}
 }
 
+// TestRun_CrossModuleAmbiguityDegrades is the regression guard for a
+// production abort: a handler returns a dependency type (one.Thing) whose
+// bare name also exists in another reachable dependency (two.Thing) that
+// no handler exposes (fixture: testdata/cross-module-ambiguous). The
+// inferred bare "Thing" ref can't be uniquely resolved by name alone, but
+// that must NOT abort the whole document — it degrades to a generic object
+// and the rest of the spec is generated.
+func TestRun_CrossModuleAmbiguityDegrades(t *testing.T) {
+	dir, err := filepath.Abs("testdata/cross-module-ambiguous/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run must not abort on an ambiguous cross-module type, got: %v", err)
+	}
+	if err := emitter.Validate(doc); err != nil {
+		t.Fatalf("emitter.Validate: %v — the degraded document must still be valid", err)
+	}
+
+	things, ok := doc.Paths["/things"]
+	if !ok {
+		t.Fatalf("doc.Paths = %+v, missing /things", doc.Paths)
+	}
+	// []*Thing -> array; its items ref was unresolvable and must degrade.
+	items := things.Get.Responses["200"].Content["application/json"].Schema.Items
+	if items == nil || items.Ref != "" || items.Type != "object" {
+		t.Errorf("items schema = %+v, want a degraded {type: object}, not a dangling $ref", items)
+	}
+	if doc.Components != nil {
+		if _, ok := doc.Components.Schemas["Thing"]; ok {
+			t.Errorf("Components = %+v, an ambiguous bare name must not register a Thing", doc.Components.Schemas)
+		}
+	}
+}
+
 // TestRun_SchemaNameCollision is the real-world regression guard for the
 // gmhafiz/go8 gap: two handler packages each declare their own Widget
 // and infer $refs to it. Before package-qualified disambiguation this

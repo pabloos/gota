@@ -3,6 +3,7 @@ package inference
 import (
 	"fmt"
 	"go/types"
+	"os"
 	"reflect"
 	"strings"
 
@@ -68,12 +69,25 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous 
 	}, nil)
 
 	reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, reachable: reachable}
+	var unresolved []string
 	for name := range names {
 		if err := reg.resolveByName(name, pkgs); err != nil {
-			return err
+			// A name that can't be uniquely resolved must not abort the
+			// whole document: warn and emit that one reference as a generic
+			// object. This covers an inferred $ref to a bare
+			// dependency-type name that collides across the reachable graph
+			// (only the type a handler actually returns is meant, but the
+			// bare name alone can't say which) and a hand-written $ref typo.
+			fmt.Fprintf(os.Stderr, "gota: warning: %v — emitting it as a generic object schema; if the name came from a \"gota:\" comment, qualify it (pkg.Name) to pin it\n", err)
+			unresolved = append(unresolved, name)
 		}
 	}
 	if reg.err != nil {
+		// A residual collision — two DISTINCT types that even
+		// package-qualification maps to one component key (two packages
+		// sharing a name at different paths) — stays fatal: it's rare and
+		// genuinely actionable (rename one), unlike a bare-name ambiguity
+		// that gota resolves or degrades on its own.
 		return reg.err
 	}
 
@@ -86,7 +100,30 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous 
 	for name, s := range reg.schemas {
 		doc.Components.Schemas[name] = s
 	}
+	for _, name := range unresolved {
+		degradeRef(doc, name)
+	}
 	return nil
+}
+
+// degradeRef replaces every "$ref: '#/components/schemas/<name>'" in doc's
+// operation schemas with a bare {type: object}, for a name that couldn't
+// be resolved to a component — keeping the document valid instead of
+// leaving a dangling $ref that emitter.Validate would reject. Only
+// operation-level refs need this: a nested field type is registered by
+// object identity while its parent resolves, never by this name lookup.
+func degradeRef(doc *model.Document, name string) {
+	target := schemaRefPrefix + name
+	for _, item := range doc.Paths {
+		for _, op := range item.Operations() {
+			walkOperationSchemas(op, func(s *model.Schema) {
+				if s.Ref == target {
+					s.Ref = ""
+					s.Type = "object"
+				}
+			})
+		}
+	}
 }
 
 // AmbiguousSchemaNames returns the set of top-level type names declared
@@ -200,7 +237,7 @@ func (r *registry) resolveByName(name string, pkgs []*packages.Package) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("gota: could not resolve $ref to schema %q: no Go type named %q was found in the analyzed packages or their dependencies — if this name came from a \"gota:\" comment, check its spelling (inferred $refs resolve automatically)", name, name)
+		return fmt.Errorf("schema %q could not be resolved: no Go type named %q was found in the analyzed packages or their dependencies", name, name)
 	}
 	r.register(named)
 	return nil
@@ -539,14 +576,15 @@ func namedInScope(pkg *packages.Package, name string) (*types.Named, bool) {
 
 // lookupTypeByName searches every package in pkgs for a top-level type
 // named name. err is non-nil only when name is declared in more than one
-// package — found is false (with no error) when it's declared in none.
-// A name that IS ambiguous only reaches here from a hand-written "gota:"
-// comment $ref (an inferred $ref for such a name is package-qualified,
-// taking lookupPackageQualifiedType instead), so the error suggests the
-// qualified forms the author can use.
+// package — found is false (with no error) when it's declared in none. An
+// ambiguous name can be reached either by a hand-written "gota:" comment
+// $ref or by an inferred $ref to a bare dependency-type name that happens
+// to collide across the reachable graph; ResolveSchemaRefs treats the
+// error as non-fatal (it degrades that one reference), so the message is
+// origin-neutral and just lists the qualified candidates.
 func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
 	var matches []*types.Named
-	var pkgPaths, qualified []string
+	var qualified []string
 	for _, pkg := range pkgs {
 		if pkg.Types == nil {
 			continue
@@ -556,7 +594,6 @@ func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named
 			continue
 		}
 		matches = append(matches, n)
-		pkgPaths = append(pkgPaths, pkg.PkgPath)
 		qualified = append(qualified, pkg.Types.Name()+"."+name)
 	}
 	switch len(matches) {
@@ -566,8 +603,8 @@ func lookupTypeByName(name string, pkgs []*packages.Package) (named *types.Named
 		return matches[0], true, nil
 	default:
 		return nil, false, fmt.Errorf(
-			"gota: schema name %q is ambiguous: a type named %q is declared in more than one analyzed package (%s) — use a package-qualified $ref instead (%s)",
-			name, name, strings.Join(pkgPaths, ", "), strings.Join(qualified, " or "),
+			"schema name %q is ambiguous: a type named %q is declared in more than one reachable package (candidates: %s)",
+			name, name, strings.Join(qualified, ", "),
 		)
 	}
 }
