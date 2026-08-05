@@ -785,17 +785,20 @@ func shallowRefSchema(t types.Type, ambiguous, roots map[string]bool) (*model.Sc
 		if _, isStruct := tt.Underlying().(*types.Struct); !isStruct {
 			return nil, false
 		}
-		// A named struct declared inside a function (or otherwise not at
-		// its package's top level) can't be resolved to a component by
-		// ResolveSchemaRefs — that pass only looks up package-scope types —
-		// so a $ref to it would error the whole document. Degrade to a
-		// generic object schema instead (the same posture as the
-		// non-string-keyed map below): the response is known to be a JSON
-		// object, just not detailed. A package-level type still gets a
-		// $ref, including an instantiated generic, whose Obj() is its
-		// package-level origin.
+		// A named struct declared inside a function (or otherwise not at its
+		// package's top level) can't be a shared component — ResolveSchemaRefs
+		// only looks up package-scope types by name, and a bare name would
+		// collide with an unrelated same-named type — so INLINE its object
+		// schema (fields expanded, named field types as their own $refs)
+		// rather than emitting an unresolvable $ref or a bare {type: object}.
+		// A throwaway registry reuses the struct/field logic; only the
+		// returned inline object is kept, and its nested $refs are resolved
+		// by ResolveSchemaRefs the same as any other. A package-level type
+		// (including an instantiated generic, whose Obj() is its package-level
+		// origin) still gets a $ref to a shared component.
 		if obj := tt.Obj(); obj.Pkg() == nil || obj.Pkg().Scope().Lookup(obj.Name()) != obj {
-			return &model.Schema{Type: "object"}, true
+			reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, roots: roots}
+			return reg.schemaForType(tt.Underlying()), true
 		}
 		return &model.Schema{Ref: schemaRefPrefix + componentName(tt, ambiguous, roots)}, true
 	case *types.Slice:
