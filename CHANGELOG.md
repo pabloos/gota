@@ -6,6 +6,37 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.3.3]
+
+Schema resolution robustness (no more aborts) and a gorilla/mux mount fix,
+each with an isolated reproducer.
+
+### Fixed
+
+- **An unresolvable schema `$ref` no longer aborts the whole document.** A
+  reference that can't be resolved to a single Go type — a bare name that
+  collides across the reachable graph, or a hand-written typo — degrades
+  to a generic `{type: object}` (warning on stderr) and the rest of the
+  spec is generated. The messages are origin-neutral (they no longer
+  assume the reference came from a `gota:` comment).
+- **A dependency / other-module response type resolves to its real
+  schema.** A type declared outside the analyzed root packages is now
+  package-qualified in its component name (`repository.Event`), so it
+  resolves through its own package instead of colliding on a bare name
+  with an unrelated same-named type elsewhere in the reachable graph — its
+  fields are expanded, and an unexposed same-named type never interferes.
+- **A function-local response type is inlined.** A struct declared inside
+  a handler (no stable component name) now inlines its real object schema
+  — fields expanded, named field types as their own `$refs` — instead of
+  degrading to a bare object.
+- **gorilla/mux: a same-package sub-router constructor mount applies its
+  prefix.** A `func() *mux.Router` constructor mounted on another router
+  now has the mount prefix applied to its routes, via
+  `root.Handle("/v2", ctor())` (and mux's `"/v2/{rest:.*}"` subpath idiom,
+  deduped) or `root.PathPrefix("/v2").Handler(http.StripPrefix("/v2",
+  ctor()))`. Its routes appear under the mount prefix rather than
+  unprefixed; a cross-package constructor remains the documented mount gap.
+
 ## [0.3.2]
 
 Body inference through the handler-factory + middleware idiom, and a
