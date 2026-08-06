@@ -6,6 +6,32 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.3.4]
+
+Richer inferred schemas, from a batch of body-inference gaps (each with an
+isolated reproducer).
+
+### Fixed
+
+- **An anonymous struct response/request value is inlined.** Encoding an
+  anonymous struct literal directly (`json.NewEncoder(w).Encode(struct{…}{})`)
+  now produces its object schema, fields and all, instead of nothing.
+- **A nested function-local type is inlined all the way down.** A local
+  type whose field is another local type (a `payload` with a `[]source`
+  field, both declared in the handler) no longer emits an unresolvable
+  `$ref` to the inner name — the inner local inlines the same as the outer.
+- **A no-body status is inferred from a bare `WriteHeader`.** A handler
+  that only `w.WriteHeader(http.StatusNoContent)` now documents a 204 (no
+  content); 304 and 1xx too. A body-bearing status (200, 201, 4xx) stays
+  ambient-only, so an error-branch `WriteHeader` without a body write
+  isn't documented from the status alone.
+- **Detected responses replace the default 200.** A handler that only
+  responds 201 or 204 documents exactly that, with no spurious 200
+  alongside it.
+- **An unresolvable inferred `$ref` warning names the operation(s)** that
+  reference it, instead of suggesting the user qualify a `$ref` they never
+  wrote.
+
 ## [0.3.3]
 
 Schema resolution robustness (no more aborts) and a gorilla/mux mount fix,
