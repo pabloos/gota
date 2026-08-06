@@ -139,12 +139,11 @@ func DetectBodyWithRoots(op *model.Operation, decl *ast.FuncDecl, info *types.In
 	rc := &responseCollector{responses: map[string]model.Response{}}
 	rc.walk(body.List, http.StatusOK, ctx, cmap)
 	if len(rc.responses) > 0 {
-		if op.Responses == nil {
-			op.Responses = map[string]model.Response{}
-		}
-		for code, resp := range rc.responses {
-			op.Responses[code] = resp
-		}
+		// The detected responses are authoritative — they replace the
+		// synthesized default 200, so a handler that only responds 201 or
+		// 204 documents exactly that, not a spurious 200 alongside it. (A
+		// "gota:" comment still overrides all of this later, in the merger.)
+		op.Responses = rc.responses
 	}
 }
 
@@ -796,11 +795,17 @@ func shallowRefSchema(t types.Type, ambiguous, roots map[string]bool) (*model.Sc
 		// by ResolveSchemaRefs the same as any other. A package-level type
 		// (including an instantiated generic, whose Obj() is its package-level
 		// origin) still gets a $ref to a shared component.
-		if obj := tt.Obj(); obj.Pkg() == nil || obj.Pkg().Scope().Lookup(obj.Name()) != obj {
+		if isLocalType(tt) {
 			reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, roots: roots}
-			return reg.schemaForType(tt.Underlying()), true
+			return reg.schemaForType(tt), true
 		}
 		return &model.Schema{Ref: schemaRefPrefix + componentName(tt, ambiguous, roots)}, true
+	case *types.Struct:
+		// An anonymous struct — the encoded value is itself a struct literal
+		// (json.NewEncoder(w).Encode(struct{...}{})) — has no name to $ref,
+		// so inline its object schema, fields and all.
+		reg := &registry{schemas: map[string]*model.Schema{}, ambiguous: ambiguous, roots: roots}
+		return reg.schemaForType(tt), true
 	case *types.Slice:
 		item, ok := shallowRefSchema(tt.Elem(), ambiguous, roots)
 		if !ok {

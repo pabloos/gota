@@ -404,8 +404,18 @@ func assertDeleteUser(t *testing.T, op *model.Operation) {
 	if op.Parameters[0].Schema == nil || op.Parameters[0].Schema.Type != "string" {
 		t.Errorf("inferred path param default should be string, got %+v", op.Parameters[0].Schema)
 	}
-	if resp, ok := op.Responses["200"]; !ok || resp.Description != "OK" {
-		t.Errorf("inferred default response missing/wrong: %+v", op.Responses)
+	// DeleteUser's body is w.WriteHeader(http.StatusNoContent): a 204 is a
+	// complete no-body response, inferred on its own and replacing the
+	// synthesized default 200.
+	if _, ok := op.Responses["200"]; ok {
+		t.Errorf("Responses = %+v, want no default 200 (the handler responds 204)", op.Responses)
+	}
+	resp, ok := op.Responses["204"]
+	if !ok || resp.Description != "No Content" {
+		t.Errorf("inferred 204 response missing/wrong: %+v", op.Responses)
+	}
+	if len(resp.Content) != 0 {
+		t.Errorf("204 response = %+v, want no content", resp)
 	}
 }
 

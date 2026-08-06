@@ -43,7 +43,15 @@ func (netHTTPDialect) decodeTarget(call *ast.CallExpr, ctx *evalCtx) (ast.Expr, 
 	return nil, nil, false
 }
 
-// response recognizes WriteHeader (ambient-only), http.Error
+// isNoBodyStatus reports whether an HTTP status must not carry a response
+// body (per RFC 9110): 1xx informational, 204 No Content, and 304 Not
+// Modified. A bare WriteHeader with such a status is a complete response.
+func isNoBodyStatus(code int) bool {
+	return code == 204 || code == 304 || (code >= 100 && code < 200)
+}
+
+// response recognizes WriteHeader (sets the ambient code, and records a
+// bare no-body response when the status carries no body), http.Error
 // (schema-less record at an explicit code, ambient unchanged — the
 // terminal-write semantics of the real call), and Encode/Marshal
 // (record at the ambient code). A shape that matches but can't be
@@ -52,7 +60,21 @@ func (netHTTPDialect) decodeTarget(call *ast.CallExpr, ctx *evalCtx) (ast.Expr, 
 // following the call as a helper.
 func (netHTTPDialect) response(call *ast.CallExpr, ctx *evalCtx) (responseEffect, bool) {
 	if code, ok := writeHeaderCode(call, ctx); ok {
-		return responseEffect{ambient: code}, true
+		// A WriteHeader sets the ambient code for a following Encode. It
+		// ALSO records a response on its own when the status carries no
+		// body by HTTP semantics (204, 304, 1xx): there, the bare
+		// WriteHeader IS the complete response (w.WriteHeader(
+		// http.StatusNoContent) alone responds 204), and there's no Encode
+		// to record it otherwise. For a body-bearing status (200, 201, 4xx,
+		// …) the bare WriteHeader stays ambient-only, so a matching Encode
+		// supplies the schema and an error-branch WriteHeader without a body
+		// write isn't documented from the status alone.
+		eff := responseEffect{ambient: code}
+		if isNoBodyStatus(code) {
+			eff.record = true
+			eff.code = code
+		}
+		return eff, true
 	}
 	if code, ok := httpErrorCode(call, ctx); ok {
 		return responseEffect{record: true, code: code}, true

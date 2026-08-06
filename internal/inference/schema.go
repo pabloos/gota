@@ -5,6 +5,7 @@ import (
 	"go/types"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -46,11 +47,20 @@ const schemaRefPrefix = "#/components/schemas/"
 // declare a $ref.
 func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous map[string]bool) error {
 	names := map[string]bool{}
+	refOps := map[string]map[string]bool{} // schema name -> set of operationIds that reference it, for actionable warnings
 	for _, item := range doc.Paths {
 		for _, op := range item.Operations() {
 			walkOperationSchemas(op, func(s *model.Schema) {
-				if name, ok := refName(s.Ref); ok {
-					names[name] = true
+				name, ok := refName(s.Ref)
+				if !ok {
+					return
+				}
+				names[name] = true
+				if op.OperationID != "" {
+					if refOps[name] == nil {
+						refOps[name] = map[string]bool{}
+					}
+					refOps[name][op.OperationID] = true
 				}
 			})
 		}
@@ -78,7 +88,7 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous 
 			// dependency-type name that collides across the reachable graph
 			// (only the type a handler actually returns is meant, but the
 			// bare name alone can't say which) and a hand-written $ref typo.
-			fmt.Fprintf(os.Stderr, "gota: warning: %v — emitting it as a generic object schema; if the name came from a \"gota:\" comment, qualify it (pkg.Name) to pin it\n", err)
+			fmt.Fprintf(os.Stderr, "gota: warning: %v%s — emitting it as a generic object schema\n", err, referencedBy(refOps[name]))
 			unresolved = append(unresolved, name)
 		}
 	}
@@ -174,6 +184,22 @@ func RootPaths(pkgs []*packages.Package) map[string]bool {
 	return roots
 }
 
+// referencedBy formats " (referenced by operation X, Y)" for a warning,
+// naming the handlers whose inferred schema couldn't be resolved — the
+// actionable context when the $ref came from inference, not a comment.
+// Returns "" when no operationId is known.
+func referencedBy(ops map[string]bool) string {
+	if len(ops) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(ops))
+	for op := range ops {
+		names = append(names, op)
+	}
+	sort.Strings(names)
+	return " (referenced by operation " + strings.Join(names, ", ") + ")"
+}
+
 func refName(ref string) (string, bool) {
 	name, ok := strings.CutPrefix(ref, schemaRefPrefix)
 	if !ok || name == "" {
@@ -221,13 +247,23 @@ func walkSchema(s *model.Schema, visit func(*model.Schema)) {
 // each one at most once and guarding against infinite recursion on
 // self-referential (or mutually referential) struct types.
 type registry struct {
-	schemas    map[string]*model.Schema
-	inProgress map[string]bool
-	ambiguous  map[string]bool     // names to package-qualify, see AmbiguousSchemaNames
-	roots      map[string]bool     // analyzed root package import paths; a type outside them is package-qualified (see componentName), matching what emission produced
-	origin     map[string]string   // component key -> the package path that produced it, for the collision guard
-	reachable  []*packages.Package // the analyzed roots plus every package transitively imported, for the dependency fallback
-	err        error               // first residual-collision error (two distinct types on one key), checked by ResolveSchemaRefs
+	schemas       map[string]*model.Schema
+	inProgress    map[string]bool
+	ambiguous     map[string]bool       // names to package-qualify, see AmbiguousSchemaNames
+	roots         map[string]bool       // analyzed root package import paths; a type outside them is package-qualified (see componentName), matching what emission produced
+	origin        map[string]string     // component key -> the package path that produced it, for the collision guard
+	reachable     []*packages.Package   // the analyzed roots plus every package transitively imported, for the dependency fallback
+	inliningLocal map[*types.Named]bool // function-local named types currently being inlined, to break a self-referential cycle
+	err           error                 // first residual-collision error (two distinct types on one key), checked by ResolveSchemaRefs
+}
+
+// isLocalType reports whether named is NOT a package-scope type — a
+// function-local struct, or otherwise not the type its own package's scope
+// resolves its name to. Such a type has no stable component name, so it's
+// inlined rather than $ref'd (see shallowRefSchema, schemaForType).
+func isLocalType(named *types.Named) bool {
+	obj := named.Obj()
+	return obj.Pkg() == nil || obj.Pkg().Scope().Lookup(obj.Name()) != obj
 }
 
 // resolveByName is the $ref entry point: name comes from a "$ref:
@@ -355,6 +391,22 @@ func (r *registry) schemaForType(t types.Type) *model.Schema {
 			return &model.Schema{Type: "string", Format: "date-time"}
 		}
 		if _, isStruct := tt.Underlying().(*types.Struct); isStruct {
+			// A function-local named struct has no stable component name to
+			// $ref (it isn't package-scope), so inline it — the same as an
+			// anonymous struct — instead of registering an unresolvable
+			// component. Guard against a self-referential local type.
+			if isLocalType(tt) {
+				if r.inliningLocal[tt] {
+					return &model.Schema{Type: "object"}
+				}
+				if r.inliningLocal == nil {
+					r.inliningLocal = map[*types.Named]bool{}
+				}
+				r.inliningLocal[tt] = true
+				s := r.schemaForType(tt.Underlying())
+				delete(r.inliningLocal, tt)
+				return s
+			}
 			return r.register(tt)
 		}
 		// A named non-struct type (e.g. "type UserID string") has no

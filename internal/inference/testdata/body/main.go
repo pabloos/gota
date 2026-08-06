@@ -124,6 +124,34 @@ func FactoryChainedHandler() http.Handler {
 	)
 }
 
+// EncodeAnonymousStruct encodes an anonymous struct literal directly —
+// the encoded value has no name to $ref, so it inlines as an object.
+func EncodeAnonymousStruct(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(struct {
+		UUID string `json:"id"`
+		Link string `json:"link"`
+	}{})
+}
+
+// EncodeNestedLocalType responds with a local type whose field is a slice
+// of ANOTHER local type — the inner local must inline too, not $ref an
+// unresolvable global name.
+func EncodeNestedLocalType(w http.ResponseWriter, r *http.Request) {
+	type inner struct {
+		Name string `json:"name"`
+	}
+	type outer struct {
+		Items []inner `json:"items"`
+	}
+	json.NewEncoder(w).Encode(outer{})
+}
+
+// WriteNoContent responds 204 with a bare WriteHeader and no body — a
+// no-body status is a complete response on its own.
+func WriteNoContent(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func EncodeErrorThenSuccess(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		json.NewEncoder(w).Encode(ErrorResponse{Message: "bad"})
@@ -144,8 +172,11 @@ func EncodeSlice(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(users)
 }
 
+// NoPattern is a bare WriteHeader for a body-bearing status with no Encode
+// — not enough to document a response (unlike a no-body status like 204,
+// which IS a complete response on its own), so detection records nothing.
 func NoPattern(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusInternalServerError)
 }
 
 func DecodeNonStruct(w http.ResponseWriter, r *http.Request) {
@@ -237,12 +268,12 @@ func RespondViaHelperErrorThenSuccess(w http.ResponseWriter, r *http.Request) {
 // Encode(data) call inside that branch and resolves data to this
 // nil literal, an untyped-nil type shallowRefSchema correctly declines
 // (same as it would for a direct "json.NewEncoder(w).Encode(nil)" call,
-// with no helper involved at all). Since nothing else in respond
-// registers a response on its own (a bare WriteHeader doesn't — see
-// NoPattern above), this handler must detect nothing, not a schema-less
-// 204 — a real behavior worth pinning down, not a bug in following.
+// with no helper involved at all). The status is body-bearing (201), so
+// respond's bare WriteHeader doesn't register a response on its own (see
+// NoPattern above) either — this handler must detect nothing, not a
+// schema-less response, a real behavior worth pinning down.
 func RespondViaHelperNilData(w http.ResponseWriter, r *http.Request) {
-	respond(w, http.StatusNoContent, nil)
+	respond(w, http.StatusCreated, nil)
 }
 
 // wrapRespond calls respond itself — a second level of helper

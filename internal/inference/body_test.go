@@ -167,6 +167,50 @@ func TestDetectBody(t *testing.T) {
 		}
 	})
 
+	t.Run("an anonymous struct response value is inlined", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "EncodeAnonymousStruct")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
+		schema := op.Responses["200"].Content["application/json"].Schema
+		if schema == nil || schema.Type != "object" || schema.Ref != "" {
+			t.Fatalf("response schema = %+v, want an inline object", schema)
+		}
+		if schema.Properties["id"] == nil || schema.Properties["link"] == nil {
+			t.Errorf("response schema = %+v, want inline fields id and link", schema)
+		}
+	})
+
+	t.Run("a local type nested inside another local type is inlined too", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "EncodeNestedLocalType")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
+		schema := op.Responses["200"].Content["application/json"].Schema
+		items := schema.Properties["items"]
+		if items == nil || items.Type != "array" || items.Items == nil {
+			t.Fatalf("items property = %+v, want an array", items)
+		}
+		// The inner local type must inline, not $ref an unresolvable name.
+		if items.Items.Ref != "" || items.Items.Type != "object" || items.Items.Properties["name"] == nil {
+			t.Errorf("items.items = %+v, want an inline object with a name field", items.Items)
+		}
+	})
+
+	t.Run("a bare WriteHeader with a no-body status records that response", func(t *testing.T) {
+		decl, info := findFunc(t, pkgs, "WriteNoContent")
+		op := &model.Operation{}
+		DetectBody(op, decl, info, nil, funcIndex, NetHTTP(), nil)
+		if _, ok := op.Responses["200"]; ok {
+			t.Errorf("Responses = %+v, want no default 200 (the handler responds 204)", op.Responses)
+		}
+		resp, ok := op.Responses["204"]
+		if !ok {
+			t.Fatalf("Responses = %+v, want a 204 from the bare WriteHeader", op.Responses)
+		}
+		if len(resp.Content) != 0 {
+			t.Errorf("204 response = %+v, want no content", resp)
+		}
+	})
+
 	t.Run("last of multiple Encode calls wins", func(t *testing.T) {
 		decl, info := findFunc(t, pkgs, "EncodeErrorThenSuccess")
 		op := &model.Operation{}
