@@ -261,6 +261,52 @@ func TestRun_CrossModuleAmbiguityResolves(t *testing.T) {
 	}
 }
 
+// TestRun_GenericWrapperWithAmbiguousArg is the regression guard for a
+// generic pagination wrapper instantiated with a dependency element type
+// whose bare name collides across the reachable graph (fixture:
+// testdata/cross-module-generic). The component name must carry the
+// QUALIFIED argument (PageResponse_repository.Signature) — resolving the
+// element by its bare name would be ambiguous and degrade the whole
+// wrapper to an object, even though a directly-returned repository.Signature
+// resolves fine.
+func TestRun_GenericWrapperWithAmbiguousArg(t *testing.T) {
+	dir, err := filepath.Abs("testdata/cross-module-generic/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Test API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+	if err := emitter.Validate(doc); err != nil {
+		t.Fatalf("emitter.Validate: %v", err)
+	}
+
+	resp := doc.Paths["/signatures"].Get.Responses["200"]
+	ref := resp.Content["application/json"].Schema.Ref
+	if ref != "#/components/schemas/PageResponse_repository.Signature" {
+		t.Fatalf("response $ref = %q, want the qualified generic wrapper PageResponse_repository.Signature (not a degraded object)", ref)
+	}
+	wrapper, ok := doc.Components.Schemas["PageResponse_repository.Signature"]
+	if !ok {
+		t.Fatalf("Components = %+v, want the wrapper component resolved", doc.Components.Schemas)
+	}
+	// Its list items must $ref the qualified element type, expanded.
+	items := wrapper.Properties["list"].Items
+	if items == nil || items.Ref != "#/components/schemas/repository.Signature" {
+		t.Errorf("list items = %+v, want $ref to repository.Signature", items)
+	}
+	if sig := doc.Components.Schemas["repository.Signature"]; sig == nil || sig.Properties["hash"] == nil {
+		t.Errorf("repository.Signature = %+v, want its fields expanded", doc.Components.Schemas["repository.Signature"])
+	}
+}
+
 // TestRun_SchemaNameCollision is the real-world regression guard for the
 // gmhafiz/go8 gap: two handler packages each declare their own Widget
 // and infer $refs to it. Before package-qualified disambiguation this

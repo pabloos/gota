@@ -313,7 +313,13 @@ func componentName(named *types.Named, ambiguous, roots map[string]bool) string 
 	name := base
 	if targs := named.TypeArgs(); targs != nil && targs.Len() == 1 {
 		if argNamed, ok := targs.At(0).(*types.Named); ok {
-			name = base + "_" + argNamed.Obj().Name()
+			// Qualify the type ARGUMENT the same way a directly-returned
+			// type is (componentName recursively), so an ambiguous or
+			// dependency element type (repository.Signature) keeps its
+			// package in the wrapper's name — "Page_repository.Signature",
+			// not a bare "Page_Signature" that resolution can't tell apart
+			// from another package's Signature.
+			name = base + "_" + componentName(argNamed, ambiguous, roots)
 		}
 	}
 	pkg := named.Obj().Pkg()
@@ -561,7 +567,13 @@ func isTimeTime(named *types.Named) bool {
 // shadowed.
 func lookupType(name string, pkgs []*packages.Package) (named *types.Named, found bool, err error) {
 	if i := strings.IndexByte(name, '.'); i > 0 && i < len(name)-1 {
-		return lookupPackageQualifiedType(name[:i], name[i+1:], pkgs)
+		if named, found, err := lookupPackageQualifiedType(name[:i], name[i+1:], pkgs); found || err != nil {
+			return named, found, err
+		}
+		// The first "." wasn't a package qualifier — it can also sit inside
+		// a generic instantiation's qualified argument
+		// ("Page_repository.Signature"), so fall through to the generic path
+		// rather than treating a missed package-lookup as authoritative.
 	}
 	named, found, err = lookupTypeByName(name, pkgs)
 	if found || err != nil {
@@ -624,7 +636,9 @@ func resolveWithinPackage(pkg *packages.Package, rest string, pkgs []*packages.P
 	if !ok || base.TypeParams() == nil || base.TypeParams().Len() != 1 {
 		return nil, false, nil
 	}
-	arg, found, err := lookupTypeByName(rest[idx+1:], pkgs)
+	// The argument may itself be package-qualified — resolve through
+	// lookupType, matching lookupInstantiatedType.
+	arg, found, err := lookupType(rest[idx+1:], pkgs)
 	if err != nil || !found {
 		return nil, false, err
 	}
@@ -709,7 +723,10 @@ func lookupInstantiatedType(name string, pkgs []*packages.Package) (named *types
 		return nil, false, nil
 	}
 
-	arg, found, err := lookupTypeByName(argName, pkgs)
+	// The argument may be package-qualified ("repository.Signature"), so
+	// resolve it through lookupType, not the bare-name lookup — that's what
+	// keeps an ambiguous element type from degrading the whole wrapper.
+	arg, found, err := lookupType(argName, pkgs)
 	if err != nil {
 		return nil, false, err
 	}
