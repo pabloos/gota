@@ -6,6 +6,32 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.4.0]
+
+Declarable OpenAPI that no static analysis can infer: authentication,
+examples, and document-level metadata.
+
+### Added
+
+- **A `gota:doc:` block for document-level OpenAPI.** Declare
+  `components.securitySchemes`, a global `security` requirement,
+  `servers`, top-level `tags`, and a richer `info` (description) once, in
+  any doc comment in the analyzed source. It overlays the generated
+  document — `info` fields override the CLI `--title`/`--version`;
+  `servers`/`security`/`tags` are set when present; `securitySchemes` and
+  any manual `schemas` merge into `components` without clobbering
+  inferred schemas. The marker is distinct from the per-handler `gota:`,
+  so neither is ever mistaken for the other.
+- **Per-operation `security` in a `gota:` comment.** A handler's comment
+  can declare a `security` requirement (e.g. `- BearerAuth: []`),
+  overriding the document-level default for that operation. Its scheme
+  name resolves against the `securitySchemes` from `gota:doc:`, and the
+  whole document is validated, so a requirement naming an undefined
+  scheme is caught.
+- **`example`/`examples` on responses, request bodies and parameters.**
+  Media types, parameters and schemas now carry OpenAPI examples declared
+  in a `gota:` comment instead of dropping them on parse.
+
 ## [0.3.5]
 
 ### Fixed
