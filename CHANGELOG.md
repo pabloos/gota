@@ -6,6 +6,20 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.3.5]
+
+### Fixed
+
+- **A generic wrapper instantiated with an ambiguous element type
+  resolves instead of degrading.** A pagination `PageResponse[
+  repository.Signature]` whose element name (`Signature`) is declared in
+  several reachable packages degraded the whole wrapper to a bare object,
+  even though the same type returned directly resolved fine. The wrapper's
+  component name now carries the package-qualified argument
+  (`PageResponse_repository.Signature`), and resolution follows the
+  qualified argument, so it resolves with the element expanded. A unique
+  element type is unaffected.
+
 ## [0.3.4]
 
 Richer inferred schemas, from a batch of body-inference gaps (each with an
