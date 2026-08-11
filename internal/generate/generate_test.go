@@ -710,3 +710,89 @@ func TestRun_OperationIDDisambiguation(t *testing.T) {
 		t.Fatalf("got %d distinct operationIds, want 8 (one per expanded method): %v", len(ids), ids)
 	}
 }
+
+// TestRun_SecurityExamplesAndDocBlock verifies that document-level fields
+// declared in a "gota:doc:" block (securitySchemes, a global security
+// requirement, servers, tags, an info description) land in the document,
+// that a per-operation "security" and a response "examples" declared in a
+// "gota:" comment survive, and that the whole thing is valid OpenAPI.
+func TestRun_SecurityExamplesAndDocBlock(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/security-examples")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Signatures API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: nethttp.New(), Dialect: inference.NetHTTP()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+	if err := emitter.Validate(doc); err != nil {
+		t.Fatalf("generated document is not valid OpenAPI: %v", err)
+	}
+
+	// Document-level "gota:doc:" declarations.
+	if doc.Info.Description != "A signatures API secured with a bearer token." {
+		t.Errorf("Info.Description = %q", doc.Info.Description)
+	}
+	if len(doc.Servers) != 1 || doc.Servers[0].URL != "https://api.example.com" {
+		t.Errorf("Servers = %+v", doc.Servers)
+	}
+	if len(doc.Tags) != 1 || doc.Tags[0].Name != "signatures" {
+		t.Errorf("Tags = %+v", doc.Tags)
+	}
+	if len(doc.Security) != 1 {
+		t.Fatalf("global Security = %+v, want one requirement", doc.Security)
+	}
+	if _, ok := doc.Security[0]["BearerAuth"]; !ok {
+		t.Errorf("global Security[0] = %+v, want BearerAuth", doc.Security[0])
+	}
+	if doc.Components == nil {
+		t.Fatalf("Components is nil")
+	}
+	scheme := doc.Components.SecuritySchemes["BearerAuth"]
+	if scheme == nil {
+		t.Fatalf("SecuritySchemes = %+v", doc.Components.SecuritySchemes)
+	}
+	if scheme.Type != "http" || scheme.Scheme != "bearer" || scheme.BearerFormat != "JWT" {
+		t.Errorf("BearerAuth = %+v", scheme)
+	}
+
+	// Per-operation security on POST /signatures.
+	post := doc.Paths["/signatures"].Post
+	if post == nil {
+		t.Fatalf("POST /signatures missing")
+	}
+	if len(post.Security) != 1 {
+		t.Fatalf("POST /signatures Security = %+v, want one requirement", post.Security)
+	}
+	if _, ok := post.Security[0]["BearerAuth"]; !ok {
+		t.Errorf("POST /signatures Security[0] = %+v, want BearerAuth", post.Security[0])
+	}
+
+	// Response examples on GET /signatures.
+	get := doc.Paths["/signatures"].Get
+	if get == nil {
+		t.Fatalf("GET /signatures missing")
+	}
+	resp, ok := get.Responses["200"]
+	if !ok {
+		t.Fatalf("GET /signatures responses = %+v, want a 200", get.Responses)
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatalf("200 content = %+v, want application/json", resp.Content)
+	}
+	if mt.Examples["sample"] == nil {
+		t.Errorf("media type examples = %+v, want a \"sample\" example", mt.Examples)
+	}
+
+	// The $ref used by the declared example resolves to an expanded schema.
+	if doc.Components.Schemas["Signature"] == nil {
+		t.Errorf("Signature schema was not expanded into components: %+v", doc.Components.Schemas)
+	}
+}

@@ -82,6 +82,27 @@ func TestMerge_DeclaredWinsWhenSet(t *testing.T) {
 	}
 }
 
+func TestMerge_DeclaredSecurity(t *testing.T) {
+	// Security is not inferable from code, so a declared requirement is
+	// simply taken over an operation that has none inferred.
+	inferred := &model.Operation{Summary: "inferred"}
+	declared := &model.Operation{
+		Security: []model.SecurityRequirement{{"BearerAuth": {}}},
+	}
+
+	out := merger.Merge(inferred, declared)
+
+	if len(out.Security) != 1 {
+		t.Fatalf("Security = %+v, want the declared requirement", out.Security)
+	}
+	if _, ok := out.Security[0]["BearerAuth"]; !ok {
+		t.Errorf("Security[0] = %+v, want a BearerAuth key", out.Security[0])
+	}
+	if out.Summary != "inferred" {
+		t.Errorf("Summary = %q, want the inferred value preserved", out.Summary)
+	}
+}
+
 func TestMerge_InferredFillsGapsWhenDeclaredEmpty(t *testing.T) {
 	inferred := &model.Operation{
 		Summary:     "inferred summary",

@@ -20,6 +20,8 @@ import (
 	"github.com/pabloos/gota/internal/parser"
 	"github.com/pabloos/gota/internal/router"
 	"github.com/pabloos/gota/pkg/model"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // Options controls document generation.
@@ -152,7 +154,155 @@ func Run(opts Options) (*model.Document, error) {
 		return nil, err
 	}
 
+	// Apply document-level "gota:doc:" declarations (securitySchemes, a
+	// global security requirement, servers, tags, richer info) last, so
+	// they overlay the generated paths/components without being touched by
+	// route inference or ref resolution.
+	docMeta, err := collectDocMeta(pkgs)
+	if err != nil {
+		return nil, err
+	}
+	applyDocMeta(doc, docMeta)
+
 	return doc, nil
+}
+
+// collectDocMeta scans every doc comment in pkgs for "gota:doc:" blocks and
+// merges them into a single document-level fragment (nil if none appear).
+// A project normally declares one such block; when several appear, later
+// ones — in package, then file, then comment order — override scalar Info
+// fields and replace non-empty Servers/Security/Tags lists, while
+// securitySchemes and manually declared schemas are unioned.
+func collectDocMeta(pkgs []*packages.Package) (*model.DocumentMeta, error) {
+	var merged *model.DocumentMeta
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Syntax {
+			for _, cg := range file.Comments {
+				meta, found, err := extractor.ExtractDoc(cg)
+				if err != nil {
+					return nil, fmt.Errorf("generate: %w", err)
+				}
+				if !found {
+					continue
+				}
+				merged = mergeDocMeta(merged, meta)
+			}
+		}
+	}
+	return merged, nil
+}
+
+// mergeDocMeta folds next into base (either may be nil), returning the
+// combined fragment. Scalar Info fields and non-empty Servers/Security/Tags
+// lists from next win; securitySchemes and schemas are unioned with next
+// taking precedence on a key clash.
+func mergeDocMeta(base, next *model.DocumentMeta) *model.DocumentMeta {
+	if base == nil {
+		return next
+	}
+	if next == nil {
+		return base
+	}
+	if next.Info != nil {
+		if base.Info == nil {
+			base.Info = &model.Info{}
+		}
+		if next.Info.Title != "" {
+			base.Info.Title = next.Info.Title
+		}
+		if next.Info.Version != "" {
+			base.Info.Version = next.Info.Version
+		}
+		if next.Info.Description != "" {
+			base.Info.Description = next.Info.Description
+		}
+	}
+	if len(next.Servers) > 0 {
+		base.Servers = next.Servers
+	}
+	if len(next.Security) > 0 {
+		base.Security = next.Security
+	}
+	if len(next.Tags) > 0 {
+		base.Tags = next.Tags
+	}
+	if next.Components != nil {
+		if base.Components == nil {
+			base.Components = &model.Components{}
+		}
+		for k, v := range next.Components.SecuritySchemes {
+			if base.Components.SecuritySchemes == nil {
+				base.Components.SecuritySchemes = map[string]*model.SecurityScheme{}
+			}
+			base.Components.SecuritySchemes[k] = v
+		}
+		for k, v := range next.Components.Schemas {
+			if base.Components.Schemas == nil {
+				base.Components.Schemas = map[string]*model.Schema{}
+			}
+			base.Components.Schemas[k] = v
+		}
+	}
+	return base
+}
+
+// applyDocMeta overlays a document-level fragment onto doc. Info fields
+// declared in the fragment override the CLI-provided title/version and add
+// a description; servers, a global security requirement and tags are set
+// when present; securitySchemes and any manually declared schemas are
+// merged into components without clobbering inferred schemas of the same
+// name (an inferred schema wins, since it reflects real code).
+func applyDocMeta(doc *model.Document, meta *model.DocumentMeta) {
+	if meta == nil {
+		return
+	}
+	if meta.Info != nil {
+		if meta.Info.Title != "" {
+			doc.Info.Title = meta.Info.Title
+		}
+		if meta.Info.Version != "" {
+			doc.Info.Version = meta.Info.Version
+		}
+		if meta.Info.Description != "" {
+			doc.Info.Description = meta.Info.Description
+		}
+	}
+	if len(meta.Servers) > 0 {
+		doc.Servers = meta.Servers
+	}
+	if len(meta.Security) > 0 {
+		doc.Security = meta.Security
+	}
+	if len(meta.Tags) > 0 {
+		doc.Tags = meta.Tags
+	}
+	if meta.Components == nil {
+		return
+	}
+	if len(meta.Components.SecuritySchemes) > 0 {
+		if doc.Components == nil {
+			doc.Components = &model.Components{}
+		}
+		if doc.Components.SecuritySchemes == nil {
+			doc.Components.SecuritySchemes = map[string]*model.SecurityScheme{}
+		}
+		for k, v := range meta.Components.SecuritySchemes {
+			doc.Components.SecuritySchemes[k] = v
+		}
+	}
+	if len(meta.Components.Schemas) > 0 {
+		if doc.Components == nil {
+			doc.Components = &model.Components{}
+		}
+		if doc.Components.Schemas == nil {
+			doc.Components.Schemas = map[string]*model.Schema{}
+		}
+		for k, v := range meta.Components.Schemas {
+			if _, exists := doc.Components.Schemas[k]; !exists {
+				doc.Components.Schemas[k] = v
+			}
+		}
+	}
 }
 
 // pendingOperation is one route's inferred (pre-merge) Operation,

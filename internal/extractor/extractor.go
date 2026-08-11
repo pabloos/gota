@@ -13,17 +13,56 @@ import (
 	"github.com/pabloos/gota/pkg/model"
 )
 
-// marker is the line that introduces a gota block. It may appear with or
-// without a trailing value on the same line, e.g. "gota:" on its own line
-// followed by an indented YAML mapping.
+// marker is the line that introduces a per-handler gota block. It may
+// appear with or without a trailing value on the same line, e.g. "gota:"
+// on its own line followed by an indented YAML mapping.
 const marker = "gota:"
+
+// docMarker introduces a document-level block: OpenAPI fields that belong
+// to the whole document (info, servers, security, tags, securitySchemes)
+// rather than any single handler. It can live in any doc comment in the
+// analyzed source. Because it shares the "gota:" prefix, Extract must skip
+// it so a "gota:doc:" line is never mistaken for a per-handler block.
+const docMarker = "gota:doc:"
 
 // Extract looks for a "gota:" block in doc and parses the YAML that follows
 // it into an Operation fragment. It returns (nil, false) if doc contains no
-// gota block.
+// gota block. A "gota:doc:" block is not a per-handler operation and is
+// ignored here (see ExtractDoc).
 func Extract(doc *ast.CommentGroup) (*model.Operation, bool, error) {
+	block, found, err := findBlock(doc, marker, docMarker)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	var op model.Operation
+	if err := yaml.Unmarshal([]byte(block), &op); err != nil {
+		return nil, false, fmt.Errorf("extractor: invalid YAML in gota: block: %w", err)
+	}
+	return &op, true, nil
+}
+
+// ExtractDoc looks for a "gota:doc:" block in doc and parses the YAML that
+// follows it into a document-level fragment. It returns (nil, false) if doc
+// contains no such block.
+func ExtractDoc(doc *ast.CommentGroup) (*model.DocumentMeta, bool, error) {
+	block, found, err := findBlock(doc, docMarker)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	var meta model.DocumentMeta
+	if err := yaml.Unmarshal([]byte(block), &meta); err != nil {
+		return nil, false, fmt.Errorf("extractor: invalid YAML in gota:doc: block: %w", err)
+	}
+	return &meta, true, nil
+}
+
+// findBlock finds the want marker in doc's comment lines and returns the
+// dedented YAML block that follows it. Lines whose trimmed text begins with
+// any of the exclude markers are skipped, so a more specific marker (e.g.
+// "gota:doc:") is never captured by a less specific one ("gota:").
+func findBlock(doc *ast.CommentGroup, want string, exclude ...string) (string, bool, error) {
 	if doc == nil {
-		return nil, false, nil
+		return "", false, nil
 	}
 	lines := commentLines(doc)
 
@@ -31,11 +70,14 @@ func Extract(doc *ast.CommentGroup) (*model.Operation, bool, error) {
 	firstLineRest := ""
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == marker {
+		if isExcluded(trimmed, exclude) {
+			continue
+		}
+		if trimmed == want {
 			start = i + 1
 			break
 		}
-		if rest, ok := strings.CutPrefix(trimmed, marker); ok && strings.TrimSpace(rest) != "" {
+		if rest, ok := strings.CutPrefix(trimmed, want); ok && strings.TrimSpace(rest) != "" {
 			// Inline form: "gota: {summary: ...}" all on one line.
 			start = i
 			firstLineRest = rest
@@ -43,7 +85,7 @@ func Extract(doc *ast.CommentGroup) (*model.Operation, bool, error) {
 		}
 	}
 	if start == -1 {
-		return nil, false, nil
+		return "", false, nil
 	}
 
 	var yamlLines []string
@@ -54,14 +96,19 @@ func Extract(doc *ast.CommentGroup) (*model.Operation, bool, error) {
 
 	block := dedent(yamlLines)
 	if strings.TrimSpace(block) == "" {
-		return nil, false, fmt.Errorf("extractor: empty gota: block")
+		return "", false, fmt.Errorf("extractor: empty %s block", want)
 	}
+	return block, true, nil
+}
 
-	var op model.Operation
-	if err := yaml.Unmarshal([]byte(block), &op); err != nil {
-		return nil, false, fmt.Errorf("extractor: invalid YAML in gota: block: %w", err)
+// isExcluded reports whether trimmed begins with any marker in exclude.
+func isExcluded(trimmed string, exclude []string) bool {
+	for _, e := range exclude {
+		if strings.HasPrefix(trimmed, e) {
+			return true
+		}
 	}
-	return &op, true, nil
+	return false
 }
 
 // commentLines returns the doc comment's text, one entry per source line,

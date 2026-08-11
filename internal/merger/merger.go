@@ -39,6 +39,9 @@ func Merge(inferred, declared *model.Operation) *model.Operation {
 	if len(declared.Responses) > 0 {
 		out.Responses = declared.Responses
 	}
+	if len(declared.Security) > 0 {
+		out.Security = declared.Security
+	}
 	if declared.Deprecated {
 		out.Deprecated = declared.Deprecated
 	}

@@ -259,6 +259,47 @@ generic name by itself (`$ref: '#/components/schemas/Response'`, with no
 instantiation specified) all fall back to today's behavior rather than
 being newly resolved.
 
+### Document-level declarations (`gota:doc:`)
+
+Some OpenAPI belongs to the whole document, not any single handler:
+authentication (`components.securitySchemes` plus a global `security`
+requirement), `servers`, top-level `tags`, and a richer `info` block.
+None of it is inferable from code. Declare it once in a `gota:doc:` block
+— raw document-level OpenAPI, in any doc comment in the analyzed source
+(a package comment is the natural home):
+
+```go
+// gota:doc:
+//   info:
+//     description: A signatures API secured with a bearer token.
+//   security:
+//     - BearerAuth: []
+//   components:
+//     securitySchemes:
+//       BearerAuth:
+//         type: http
+//         scheme: bearer
+//         bearerFormat: JWT
+package main
+```
+
+`gota:doc:` overlays the generated document: its `info` fields override
+the CLI-provided `--title`/`--version` and add a description; `servers`,
+`security` and `tags` are set when present; `securitySchemes` (and any
+manually declared `schemas`) merge into `components` without clobbering
+schemas gota inferred from real code. A project normally has one such
+block; if several appear they're merged in a deterministic order. The
+marker is distinct from the per-handler `gota:` — a `gota:doc:` block is
+never mistaken for an operation, and vice versa.
+
+Per-operation `security` and per-response/parameter `example`/`examples`
+are ordinary OpenAPI too, so they're written in a handler's own `gota:`
+comment and simply carried through — a `security:` requirement there
+overrides the document-level default for that one operation, and its
+scheme name resolves against the `securitySchemes` declared in
+`gota:doc:` (the generated document is validated as a whole, so a
+requirement naming an undefined scheme is caught).
+
 Other router plugins — Echo, Fiber — are not implemented yet; like Gin,
 they'd also need their own `inference.Dialect` (see the body inference
 paragraph above), not just a router plugin.
@@ -420,15 +461,15 @@ Core engine — everything router-agnostic:
 
 | Feature                          | What's tested                                                                                                                                              | Where |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|-------|
-| `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), no block present, invalid YAML, prose preceding the block                     | `internal/extractor/extractor_test.go` |
-| Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set                                       | `internal/merger/merger_test.go` |
+| `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), no block present, invalid YAML, prose preceding the block, and `gota:doc:` document-level blocks kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
+| Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, a declared `security` requirement is taken over an operation with none inferred | `internal/merger/merger_test.go` |
 | Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
 | Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
 | Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, maps, basic types, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity, following a chain of same- or cross-package helpers up to four calls deep (both directions, cycle detection, nil-argument and variadic/arity-mismatch non-follow cases), map-literal envelopes (constant keys → inline object, dynamic key → bare object) | `internal/inference/body_test.go` |
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal; `security-examples` fixture proving a `gota:doc:` block (securitySchemes, global security, servers, tags, info description), a per-operation `security`, and response `examples` all land in a document that validates | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
 router's API:

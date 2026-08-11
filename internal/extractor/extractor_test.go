@@ -152,3 +152,80 @@ func Broken() {}
 		t.Fatalf("expected an error for invalid YAML")
 	}
 }
+
+func TestExtract_IgnoresDocBlock(t *testing.T) {
+	// A "gota:doc:" block is document-level, not a per-handler operation:
+	// Extract must skip it rather than mis-parse "doc:" as an inline block.
+	doc := docOf(t, `
+// gota:doc:
+//   info:
+//     description: The whole API.
+func setup() {}
+`)
+	op, found, err := extractor.Extract(doc)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if found {
+		t.Fatalf("Extract should ignore a gota:doc: block, got %+v", op)
+	}
+}
+
+func TestExtractDoc_FullBlock(t *testing.T) {
+	doc := docOf(t, `
+// gota:doc:
+//   info:
+//     description: A signatures API.
+//   security:
+//     - BearerAuth: []
+//   components:
+//     securitySchemes:
+//       BearerAuth:
+//         type: http
+//         scheme: bearer
+//         bearerFormat: JWT
+func setup() {}
+`)
+	meta, found, err := extractor.ExtractDoc(doc)
+	if err != nil {
+		t.Fatalf("ExtractDoc: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected a gota:doc: block to be found")
+	}
+	if meta.Info == nil || meta.Info.Description != "A signatures API." {
+		t.Errorf("Info = %+v", meta.Info)
+	}
+	if len(meta.Security) != 1 {
+		t.Fatalf("Security = %+v", meta.Security)
+	}
+	if _, ok := meta.Security[0]["BearerAuth"]; !ok {
+		t.Errorf("Security[0] = %+v, want a BearerAuth key", meta.Security[0])
+	}
+	if meta.Components == nil {
+		t.Fatalf("Components is nil")
+	}
+	scheme := meta.Components.SecuritySchemes["BearerAuth"]
+	if scheme == nil {
+		t.Fatalf("SecuritySchemes = %+v", meta.Components.SecuritySchemes)
+	}
+	if scheme.Type != "http" || scheme.Scheme != "bearer" || scheme.BearerFormat != "JWT" {
+		t.Errorf("BearerAuth scheme = %+v", scheme)
+	}
+}
+
+func TestExtractDoc_IgnoresOperationBlock(t *testing.T) {
+	// A plain "gota:" operation block is not document-level.
+	doc := docOf(t, `
+// gota:
+//   summary: Get a user
+func GetUser() {}
+`)
+	_, found, err := extractor.ExtractDoc(doc)
+	if err != nil {
+		t.Fatalf("ExtractDoc: %v", err)
+	}
+	if found {
+		t.Fatalf("ExtractDoc should ignore a plain gota: block")
+	}
+}
