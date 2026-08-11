@@ -33,6 +33,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /signatures", ListSignatures)
 	mux.HandleFunc("POST /signatures", CreateSignature)
+	mux.HandleFunc("GET /signatures/{id}", GetSignature)
+	mux.HandleFunc("GET /health", Health)
 
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }

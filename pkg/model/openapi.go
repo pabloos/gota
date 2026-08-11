@@ -142,15 +142,22 @@ func (pi *PathItem) ForMethod(method string) *Operation {
 // are unmarshaled directly into this type: the comment IS OpenAPI, not an
 // intermediate DSL.
 type Operation struct {
-	Summary     string                `yaml:"summary,omitempty" json:"summary,omitempty"`
-	Description string                `yaml:"description,omitempty" json:"description,omitempty"`
-	OperationID string                `yaml:"operationId,omitempty" json:"operationId,omitempty"`
-	Tags        []string              `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Parameters  []Parameter           `yaml:"parameters,omitempty" json:"parameters,omitempty"`
-	RequestBody *RequestBody          `yaml:"requestBody,omitempty" json:"requestBody,omitempty"`
-	Responses   map[string]Response   `yaml:"responses,omitempty" json:"responses,omitempty"`
-	Security    []SecurityRequirement `yaml:"security,omitempty" json:"security,omitempty"`
-	Deprecated  bool                  `yaml:"deprecated,omitempty" json:"deprecated,omitempty"`
+	Summary     string              `yaml:"summary,omitempty" json:"summary,omitempty"`
+	Description string              `yaml:"description,omitempty" json:"description,omitempty"`
+	OperationID string              `yaml:"operationId,omitempty" json:"operationId,omitempty"`
+	Tags        []string            `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Parameters  []Parameter         `yaml:"parameters,omitempty" json:"parameters,omitempty"`
+	RequestBody *RequestBody        `yaml:"requestBody,omitempty" json:"requestBody,omitempty"`
+	Responses   map[string]Response `yaml:"responses,omitempty" json:"responses,omitempty"`
+
+	// Security is a pointer so an explicitly declared empty requirement
+	// list (security: []) — OpenAPI's way of marking one operation public,
+	// overriding a document-level default — is distinguishable from an
+	// absent one (nil) and still emitted, which an omitempty slice would
+	// drop in both YAML and JSON.
+	Security *[]SecurityRequirement `yaml:"security,omitempty" json:"security,omitempty"`
+
+	Deprecated bool `yaml:"deprecated,omitempty" json:"deprecated,omitempty"`
 
 	// Skip is gota's own build-time directive, declared as "x-gota-skip"
 	// — a real OpenAPI Specification Extension field, not an invented

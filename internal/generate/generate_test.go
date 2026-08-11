@@ -767,11 +767,11 @@ func TestRun_SecurityExamplesAndDocBlock(t *testing.T) {
 	if post == nil {
 		t.Fatalf("POST /signatures missing")
 	}
-	if len(post.Security) != 1 {
+	if post.Security == nil || len(*post.Security) != 1 {
 		t.Fatalf("POST /signatures Security = %+v, want one requirement", post.Security)
 	}
-	if _, ok := post.Security[0]["BearerAuth"]; !ok {
-		t.Errorf("POST /signatures Security[0] = %+v, want BearerAuth", post.Security[0])
+	if _, ok := (*post.Security)[0]["BearerAuth"]; !ok {
+		t.Errorf("POST /signatures Security[0] = %+v, want BearerAuth", (*post.Security)[0])
 	}
 
 	// Response examples on GET /signatures.
@@ -794,5 +794,45 @@ func TestRun_SecurityExamplesAndDocBlock(t *testing.T) {
 	// The $ref used by the declared example resolves to an expanded schema.
 	if doc.Components.Schemas["Signature"] == nil {
 		t.Errorf("Signature schema was not expanded into components: %+v", doc.Components.Schemas)
+	}
+
+	// GET /signatures/{id}: the comment declares only a response example;
+	// the schema gota inferred ($ref Signature) and the inferred "OK"
+	// description must survive the merge alongside it.
+	byID := doc.Paths["/signatures/{id}"].Get
+	if byID == nil {
+		t.Fatalf("GET /signatures/{id} missing")
+	}
+	if byID.Description != "Fetch a single signature." {
+		t.Errorf("Description = %q, want the declared operation description", byID.Description)
+	}
+	r200, ok := byID.Responses["200"]
+	if !ok {
+		t.Fatalf("GET /signatures/{id} responses = %+v, want a 200", byID.Responses)
+	}
+	if r200.Description == "" {
+		t.Errorf("200 description was blanked, want the inferred one preserved")
+	}
+	idMT, ok := r200.Content["application/json"]
+	if !ok {
+		t.Fatalf("200 content = %+v, want application/json", r200.Content)
+	}
+	if idMT.Schema == nil || idMT.Schema.Ref != "#/components/schemas/Signature" {
+		t.Errorf("Schema = %+v, want the inferred $ref preserved", idMT.Schema)
+	}
+	if idMT.Example == nil {
+		t.Errorf("Example is nil, want the declared example added")
+	}
+
+	// GET /health declares security: [] — a non-nil empty requirement that
+	// marks the endpoint public, distinct from an absent one.
+	health := doc.Paths["/health"].Get
+	if health == nil {
+		t.Fatalf("GET /health missing")
+	}
+	if health.Security == nil {
+		t.Errorf("GET /health Security is nil, want a declared empty (public) requirement")
+	} else if len(*health.Security) != 0 {
+		t.Errorf("GET /health Security = %+v, want empty", *health.Security)
 	}
 }

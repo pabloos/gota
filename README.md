@@ -292,13 +292,20 @@ block; if several appear they're merged in a deterministic order. The
 marker is distinct from the per-handler `gota:` — a `gota:doc:` block is
 never mistaken for an operation, and vice versa.
 
-Per-operation `security` and per-response/parameter `example`/`examples`
-are ordinary OpenAPI too, so they're written in a handler's own `gota:`
-comment and simply carried through — a `security:` requirement there
-overrides the document-level default for that one operation, and its
-scheme name resolves against the `securitySchemes` declared in
-`gota:doc:` (the generated document is validated as a whole, so a
-requirement naming an undefined scheme is caught).
+Per-operation `security` and per-response `example`/`examples` are
+ordinary OpenAPI too, so they're written in a handler's own `gota:`
+comment. Responses and the request body merge **field by field**: adding
+an `example` under a `200` keeps the `schema` and `description` gota
+inferred for that same response, and a response code the comment doesn't
+mention is left in place — declared fields win only where they appear,
+they never wipe an inferred sibling. A `security:` requirement overrides
+the document-level default for that one operation, and its scheme name
+resolves against the `securitySchemes` declared in `gota:doc:` (the
+generated document is validated as a whole, so a requirement naming an
+undefined scheme is caught). An explicit empty `security: []` is honored
+as written — it marks that operation public, overriding the global
+default, and is emitted rather than dropped (distinct from omitting
+`security` entirely, which inherits the default).
 
 Other router plugins — Echo, Fiber — are not implemented yet; like Gin,
 they'd also need their own `inference.Dialect` (see the body inference
@@ -462,7 +469,7 @@ Core engine — everything router-agnostic:
 | Feature                          | What's tested                                                                                                                                              | Where |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|-------|
 | `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), no block present, invalid YAML, prose preceding the block, and `gota:doc:` document-level blocks kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
-| Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, a declared `security` requirement is taken over an operation with none inferred | `internal/merger/merger_test.go` |
+| Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, responses/request body merge field-by-field (a declared example keeps the inferred schema/description), a declared `security` requirement is taken over an operation with none inferred, an explicit `security: []` round-trips | `internal/merger/merger_test.go` |
 | Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
 | Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
 | Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, maps, basic types, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity, following a chain of same- or cross-package helpers up to four calls deep (both directions, cycle detection, nil-argument and variadic/arity-mismatch non-follow cases), map-literal envelopes (constant keys → inline object, dynamic key → bare object) | `internal/inference/body_test.go` |

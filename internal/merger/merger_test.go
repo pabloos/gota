@@ -71,11 +71,13 @@ func TestMerge_DeclaredWinsWhenSet(t *testing.T) {
 	if out.RequestBody == nil || out.RequestBody.Description != "declared body" {
 		t.Errorf("RequestBody = %+v, want declared value", out.RequestBody)
 	}
-	if _, hasInferred := out.Responses["200"]; hasInferred {
-		t.Errorf("Responses = %+v, inferred 200 should have been replaced wholesale, not merged", out.Responses)
+	// Responses merge per status code: the declared 201 is added, and the
+	// inferred 200 the comment doesn't mention is kept (not wiped).
+	if resp, ok := out.Responses["200"]; !ok || resp.Description != "inferred OK" {
+		t.Errorf("Responses = %+v, want the unmentioned inferred 200 preserved", out.Responses)
 	}
 	if resp, ok := out.Responses["201"]; !ok || resp.Description != "declared Created" {
-		t.Errorf("Responses = %+v, want only the declared 201", out.Responses)
+		t.Errorf("Responses = %+v, want the declared 201 added", out.Responses)
 	}
 	if !out.Deprecated {
 		t.Errorf("Deprecated = false, want true from declared")
@@ -87,19 +89,74 @@ func TestMerge_DeclaredSecurity(t *testing.T) {
 	// simply taken over an operation that has none inferred.
 	inferred := &model.Operation{Summary: "inferred"}
 	declared := &model.Operation{
-		Security: []model.SecurityRequirement{{"BearerAuth": {}}},
+		Security: &[]model.SecurityRequirement{{"BearerAuth": {}}},
 	}
 
 	out := merger.Merge(inferred, declared)
 
-	if len(out.Security) != 1 {
+	if out.Security == nil || len(*out.Security) != 1 {
 		t.Fatalf("Security = %+v, want the declared requirement", out.Security)
 	}
-	if _, ok := out.Security[0]["BearerAuth"]; !ok {
-		t.Errorf("Security[0] = %+v, want a BearerAuth key", out.Security[0])
+	if _, ok := (*out.Security)[0]["BearerAuth"]; !ok {
+		t.Errorf("Security[0] = %+v, want a BearerAuth key", (*out.Security)[0])
 	}
 	if out.Summary != "inferred" {
 		t.Errorf("Summary = %q, want the inferred value preserved", out.Summary)
+	}
+}
+
+func TestMerge_DeclaredEmptySecurityRoundTrips(t *testing.T) {
+	// An explicitly declared empty requirement list (security: []) marks
+	// the operation public and must survive as a non-nil empty slice —
+	// distinct from an absent one, which would inherit the document default.
+	inferred := &model.Operation{Summary: "inferred"}
+	declared := &model.Operation{Security: &[]model.SecurityRequirement{}}
+
+	out := merger.Merge(inferred, declared)
+
+	if out.Security == nil {
+		t.Fatalf("Security is nil, want a declared empty (non-nil) list")
+	}
+	if len(*out.Security) != 0 {
+		t.Errorf("Security = %+v, want empty", *out.Security)
+	}
+}
+
+func TestMerge_DeclaredExampleKeepsInferredSchema(t *testing.T) {
+	// Declaring an example under a response must not erase the schema and
+	// description gota inferred for that same status code — the fields merge.
+	inferred := &model.Operation{
+		Responses: map[string]model.Response{
+			"200": {
+				Description: "OK",
+				Content: map[string]model.MediaType{
+					"application/json": {Schema: &model.Schema{Ref: "#/components/schemas/Sig"}},
+				},
+			},
+		},
+	}
+	declared := &model.Operation{
+		Responses: map[string]model.Response{
+			"200": {
+				Content: map[string]model.MediaType{
+					"application/json": {Example: map[string]any{"id": "sig_2f8a"}},
+				},
+			},
+		},
+	}
+
+	out := merger.Merge(inferred, declared)
+
+	resp := out.Responses["200"]
+	if resp.Description != "OK" {
+		t.Errorf("Description = %q, want the inferred %q preserved", resp.Description, "OK")
+	}
+	mt := resp.Content["application/json"]
+	if mt.Schema == nil || mt.Schema.Ref != "#/components/schemas/Sig" {
+		t.Errorf("Schema = %+v, want the inferred $ref preserved", mt.Schema)
+	}
+	if mt.Example == nil {
+		t.Errorf("Example is nil, want the declared example added")
 	}
 }
 
