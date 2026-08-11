@@ -6,6 +6,25 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.4.1]
+
+### Fixed
+
+- **A declared `example` no longer erases the inferred `schema`.** The
+  comment merge now goes field-by-field through `responses` → status code
+  → `content` → media type → {`schema`, `example`, `examples`}, so
+  declaring an `example` under a response keeps the `schema` and
+  `description` gota inferred for it, and a response code the comment
+  doesn't mention is left in place. The request body merges the same way.
+  Previously any declared `responses` block replaced the inferred one
+  wholesale, forcing a choice between inferred schemas and declared
+  examples.
+- **An explicit `security: []` is emitted as written.** Declaring an
+  empty requirement list on an operation — OpenAPI's way of marking it
+  public over a document-level default — now round-trips instead of being
+  dropped (which left the endpoint documented as protected). It stays
+  distinct from omitting `security`, which still inherits the default.
+
 ## [0.4.0]
 
 Declarable OpenAPI that no static analysis can infer: authentication,
