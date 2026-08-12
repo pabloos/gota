@@ -6,6 +6,39 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.5.0]
+
+### Added
+
+- **A handler's doc comment becomes the operation description.** gota
+  already derives the `summary` from the function name; now the prose a Go
+  developer writes above the handler — everything except the `gota:`
+  block, paragraph breaks preserved — fills in the `description`. A
+  `description:` declared in the `gota:` block still wins.
+- **Schema validation keywords in a `gota:` comment are kept.** `pattern`,
+  `minLength`/`maxLength`, `minimum`/`maximum`, `minItems`/`maxItems`,
+  `title`, `readOnly`/`writeOnly` are now modeled, so a hand-written
+  constrained schema round-trips instead of being silently truncated.
+
+### Fixed
+
+- **A path variable whose regex contains braces no longer corrupts the
+  path.** A gorilla/mux constraint such as `{id:[a-z]{3}}` or
+  `{id:^sig_([a-zA-Z0-9]{22})$}` was cut at the first `}` inside the
+  regex, leaking a stray brace (`/x/{id}}`, `/x/{id})$}`). The closing
+  brace is now found by balancing nesting, so these degrade cleanly to
+  `{id}`. It produced a wrong path silently — no error.
+- **A declared parameter no longer discards the inferred one.**
+  Parameters merge field-by-field, matched by their `in`+`name` identity:
+  declaring a `description` or a constrained `schema` for an inferred path
+  parameter enriches it (and keeps the inferred `required`) instead of
+  replacing it wholesale.
+- **A `gota:`/`gota:doc:` block no longer swallows following prose.** The
+  block is bounded at the first blank comment line (or where prose returns
+  to the left margin), so package or handler documentation can sit in the
+  same comment — notably a `gota:doc:` block at the top of a package
+  comment — without being mis-parsed as YAML.
+
 ## [0.4.1]
 
 ### Fixed
