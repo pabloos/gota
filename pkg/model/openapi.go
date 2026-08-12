@@ -235,4 +235,20 @@ type Schema struct {
 	Nullable             bool               `yaml:"nullable,omitempty" json:"nullable,omitempty"`
 	Example              any                `yaml:"example,omitempty" json:"example,omitempty"`
 	Examples             []any              `yaml:"examples,omitempty" json:"examples,omitempty"`
+
+	// Validation keywords a hand-written "gota:" schema commonly carries.
+	// gota never infers these (they're constraints, not shapes), so they
+	// only ever arrive from a comment; without a field here they'd be
+	// silently dropped on unmarshal. Minimum/Maximum are pointers because
+	// zero is a meaningful bound.
+	Title     string   `yaml:"title,omitempty" json:"title,omitempty"`
+	Pattern   string   `yaml:"pattern,omitempty" json:"pattern,omitempty"`
+	MinLength int      `yaml:"minLength,omitempty" json:"minLength,omitempty"`
+	MaxLength int      `yaml:"maxLength,omitempty" json:"maxLength,omitempty"`
+	Minimum   *float64 `yaml:"minimum,omitempty" json:"minimum,omitempty"`
+	Maximum   *float64 `yaml:"maximum,omitempty" json:"maximum,omitempty"`
+	MinItems  int      `yaml:"minItems,omitempty" json:"minItems,omitempty"`
+	MaxItems  int      `yaml:"maxItems,omitempty" json:"maxItems,omitempty"`
+	ReadOnly  bool     `yaml:"readOnly,omitempty" json:"readOnly,omitempty"`
+	WriteOnly bool     `yaml:"writeOnly,omitempty" json:"writeOnly,omitempty"`
 }

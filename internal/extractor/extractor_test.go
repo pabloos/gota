@@ -141,6 +141,124 @@ func CreateUser() {}
 	}
 }
 
+func TestExtract_ProseAfterBlock(t *testing.T) {
+	// A blank line ends the block; prose after it is not parsed as YAML.
+	doc := docOf(t, `
+// GetUser returns a user.
+//
+// gota:
+//   summary: Get user
+//
+// This trailing paragraph documents the handler for Go readers and must
+// not be parsed as YAML (its colon would break it).
+func GetUser() {}
+`)
+	op, found, err := extractor.Extract(doc)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected a gota block to be found")
+	}
+	if op.Summary != "Get user" {
+		t.Errorf("Summary = %q, want %q", op.Summary, "Get user")
+	}
+}
+
+func TestExtract_InlineForm(t *testing.T) {
+	doc := docOf(t, `
+// gota: {summary: Inline summary}
+//
+// Prose after an inline block is ignored.
+func Thing() {}
+`)
+	op, found, err := extractor.Extract(doc)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !found || op.Summary != "Inline summary" {
+		t.Errorf("op = %+v, found = %v, want summary %q", op, found, "Inline summary")
+	}
+}
+
+func TestExtractDoc_ProseAfterBlock(t *testing.T) {
+	// The document-level block at the top of a package comment, followed by
+	// the package's own prose — the exact shape that used to fail to parse.
+	doc := docOf(t, `
+// gota:doc:
+//   info:
+//     description: The public API.
+//
+// Package v2 implements the public v2 API. The gota:doc: block above
+// supplies what cannot be inferred: authentication, servers and so on.
+func setup() {}
+`)
+	meta, found, err := extractor.ExtractDoc(doc)
+	if err != nil {
+		t.Fatalf("ExtractDoc: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected a gota:doc: block to be found")
+	}
+	if meta.Info == nil || meta.Info.Description != "The public API." {
+		t.Errorf("Info = %+v, want just the block's description", meta.Info)
+	}
+}
+
+func TestProse(t *testing.T) {
+	t.Run("prose before a gota: block, block stripped", func(t *testing.T) {
+		doc := docOf(t, `
+// GetUser returns a user by ID.
+//
+// It 404s when the user is missing.
+//
+// gota:
+//   summary: Get user
+func GetUser() {}
+`)
+		got := extractor.Prose(doc)
+		want := "GetUser returns a user by ID.\n\nIt 404s when the user is missing."
+		if got != want {
+			t.Errorf("Prose = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("only a gota: block yields empty prose", func(t *testing.T) {
+		doc := docOf(t, `
+// gota:
+//   summary: Get user
+func GetUser() {}
+`)
+		if got := extractor.Prose(doc); got != "" {
+			t.Errorf("Prose = %q, want empty", got)
+		}
+	})
+
+	t.Run("prose with no block is returned whole", func(t *testing.T) {
+		doc := docOf(t, `
+// OnlyProse does a thing.
+func OnlyProse() {}
+`)
+		if got := extractor.Prose(doc); got != "OnlyProse does a thing." {
+			t.Errorf("Prose = %q", got)
+		}
+	})
+
+	t.Run("a gota:doc: block is stripped too", func(t *testing.T) {
+		doc := docOf(t, `
+// Package v2 is the API.
+//
+// gota:doc:
+//   info:
+//     description: X
+func setup() {}
+`)
+		if got := extractor.Prose(doc); got != "Package v2 is the API." {
+			t.Errorf("Prose = %q, want just the package prose", got)
+		}
+	})
+}
+
 func TestExtract_InvalidYAML(t *testing.T) {
 	doc := docOf(t, `
 // gota:

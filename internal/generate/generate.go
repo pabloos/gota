@@ -113,6 +113,16 @@ func Run(opts Options) (*model.Document, error) {
 					cmap = commentMapFor(pkg.Fset, route.File, cmaps)
 				}
 				inferred := inference.Operation(route)
+				// A handler's doc-comment prose (everything but its "gota:"
+				// block) becomes the operation description — the one piece of
+				// per-operation documentation a Go developer already writes at
+				// the source. A description declared in the comment still wins,
+				// applied later in the merge.
+				if route.HandlerDecl != nil {
+					if prose := extractor.Prose(route.HandlerDecl.Doc); prose != "" {
+						inferred.Description = prose
+					}
+				}
 				inference.DetectBodyWithRoots(inferred, handlerDecl, info, cmap, globalIndex, rt.Dialect, ambiguous, roots)
 				pending = append(pending, pendingOperation{route: route, info: info, cmap: cmap, op: inferred})
 			}

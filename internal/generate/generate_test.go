@@ -823,6 +823,34 @@ func TestRun_SecurityExamplesAndDocBlock(t *testing.T) {
 	if idMT.Example == nil {
 		t.Errorf("Example is nil, want the declared example added")
 	}
+	// The comment enriches the inferred {id} path parameter: the declared
+	// description and constrained schema (pattern) survive, and the
+	// inferred required flag is kept — not duplicated into a second param.
+	if len(byID.Parameters) != 1 {
+		t.Fatalf("GET /signatures/{id} parameters = %+v, want the single enriched {id}", byID.Parameters)
+	}
+	idParam := byID.Parameters[0]
+	if idParam.Name != "id" || !idParam.Required {
+		t.Errorf("id param = %+v, want name id and inferred required preserved", idParam)
+	}
+	if idParam.Schema == nil || idParam.Schema.Pattern != "^sig_([a-zA-Z0-9]{22})$" {
+		t.Errorf("id param schema = %+v, want the declared pattern preserved", idParam.Schema)
+	}
+
+	// GET /revoked has no declared description, so its Go doc-comment prose
+	// (both paragraphs, the gota: block excluded) becomes the description.
+	revoked := doc.Paths["/revoked"].Get
+	if revoked == nil {
+		t.Fatalf("GET /revoked missing")
+	}
+	wantProse := "ListRevoked returns revoked signatures. It documents itself in plain Go\nprose and declares no gota: description, so this text becomes the\noperation description.\n\nThe revocation list is advisory and cached for a minute."
+	if revoked.Description != wantProse {
+		t.Errorf("GET /revoked description = %q, want the doc-comment prose %q", revoked.Description, wantProse)
+	}
+
+	// GetSignature's doc comment has prose AND declares a description; the
+	// declared one wins (already asserted above as "Fetch a single
+	// signature.", which is not its prose).
 
 	// GET /health declares security: [] — a non-nil empty requirement that
 	// marks the endpoint public, distinct from an absent one.

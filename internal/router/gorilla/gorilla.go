@@ -820,11 +820,30 @@ func normalizePath(pattern string) (string, bool) {
 			i++
 			continue
 		}
-		end := strings.IndexByte(pattern[i:], '}')
+		// Find the brace that closes this variable by balancing nesting,
+		// not the first '}': a mux constraint regex can itself contain
+		// braces — a quantifier like "{id:[a-z]{3}}" or a full anchored
+		// pattern "{id:^sig_([a-zA-Z0-9]{22})$}" — and cutting at the first
+		// '}' would truncate the regex and leak a stray '}' into the path.
+		depth := 0
+		end := -1
+		for j := i; j < len(pattern); j++ {
+			switch pattern[j] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = j
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
 		if end < 0 {
 			return "", false
 		}
-		end += i
 		name := pattern[i+1 : end]
 		if colon := strings.IndexByte(name, ':'); colon >= 0 {
 			name = name[:colon]

@@ -30,9 +30,7 @@ func Merge(inferred, declared *model.Operation) *model.Operation {
 	if len(declared.Tags) > 0 {
 		out.Tags = declared.Tags
 	}
-	if len(declared.Parameters) > 0 {
-		out.Parameters = declared.Parameters
-	}
+	out.Parameters = mergeParameters(inferred.Parameters, declared.Parameters)
 	out.RequestBody = mergeRequestBody(inferred.RequestBody, declared.RequestBody)
 	out.Responses = mergeResponses(inferred.Responses, declared.Responses)
 	if declared.Security != nil {
@@ -46,6 +44,61 @@ func Merge(inferred, declared *model.Operation) *model.Operation {
 	}
 
 	return &out
+}
+
+// mergeParameters folds declared parameters into inferred ones, matched
+// by their (in, name) pair — the tuple OpenAPI treats as a parameter's
+// identity. A declared parameter that matches an inferred one is merged
+// field-by-field (see mergeParameter), so declaring a description or a
+// constrained schema for the {id} path parameter gota already inferred
+// enriches it instead of discarding what was inferred; a declared
+// parameter with no inferred match is appended; an inferred parameter the
+// comment doesn't mention is kept.
+func mergeParameters(inferred, declared []model.Parameter) []model.Parameter {
+	if len(declared) == 0 {
+		return inferred
+	}
+	out := make([]model.Parameter, len(inferred))
+	copy(out, inferred)
+	idx := make(map[[2]string]int, len(out))
+	for i, p := range out {
+		idx[[2]string{p.In, p.Name}] = i
+	}
+	for _, dp := range declared {
+		key := [2]string{dp.In, dp.Name}
+		if i, ok := idx[key]; ok {
+			out[i] = mergeParameter(out[i], dp)
+		} else {
+			idx[key] = len(out)
+			out = append(out, dp)
+		}
+	}
+	return out
+}
+
+// mergeParameter merges one declared parameter into its inferred
+// counterpart: the declared description, required flag, schema, example
+// and examples each win when set, leaving the inferred value in place
+// otherwise — so a declared description doesn't erase the inferred schema
+// and vice versa.
+func mergeParameter(inferred, declared model.Parameter) model.Parameter {
+	out := inferred
+	if declared.Description != "" {
+		out.Description = declared.Description
+	}
+	if declared.Required {
+		out.Required = declared.Required
+	}
+	if declared.Schema != nil {
+		out.Schema = declared.Schema
+	}
+	if declared.Example != nil {
+		out.Example = declared.Example
+	}
+	if declared.Examples != nil {
+		out.Examples = declared.Examples
+	}
+	return out
 }
 
 // mergeResponses folds the declared responses into the inferred ones,

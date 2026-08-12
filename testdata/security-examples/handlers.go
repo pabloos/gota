@@ -63,6 +63,13 @@ func CreateSignature(w http.ResponseWriter, r *http.Request) {
 // gota:
 //
 //	description: Fetch a single signature.
+//	parameters:
+//	  - name: id
+//	    in: path
+//	    description: The signature id, "sig_" plus 22 alphanumerics.
+//	    schema:
+//	      type: string
+//	      pattern: '^sig_([a-zA-Z0-9]{22})$'
 //	responses:
 //	  '200':
 //	    content:
@@ -72,6 +79,16 @@ func CreateSignature(w http.ResponseWriter, r *http.Request) {
 //	          hash: abc123
 func GetSignature(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(Signature{})
+}
+
+// ListRevoked returns revoked signatures. It documents itself in plain Go
+// prose and declares no gota: description, so this text becomes the
+// operation description.
+//
+// The revocation list is advisory and cached for a minute.
+func ListRevoked(w http.ResponseWriter, r *http.Request) {
+	var sigs []Signature
+	json.NewEncoder(w).Encode(sigs)
 }
 
 // Health is a public liveness probe. An explicit empty security requirement

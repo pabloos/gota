@@ -87,6 +87,18 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
+	t.Run("a {id:regex} with a {n} quantifier degrades to a bare {id}", func(t *testing.T) {
+		if _, ok := got["GET /quantifier/{id}"]; !ok {
+			t.Errorf("routes = %+v, missing GET /quantifier/{id} — a brace in the regex must not truncate the variable (would give /quantifier/{id}})", got)
+		}
+	})
+
+	t.Run("a full anchored {id:regex} with braces degrades to a bare {id}", func(t *testing.T) {
+		if _, ok := got["GET /anchored/{id}"]; !ok {
+			t.Errorf("routes = %+v, missing GET /anchored/{id} — the closing brace must balance, not the first one (would give /anchored/{id})$})", got)
+		}
+	})
+
 	t.Run("a {rest:.*} catch-all degrades to {rest}", func(t *testing.T) {
 		if _, ok := got["GET /static/{rest}"]; !ok {
 			t.Errorf("routes = %+v, missing GET /static/{rest}", got)

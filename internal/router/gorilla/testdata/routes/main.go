@@ -31,7 +31,9 @@ func Register() *mux.Router {
 	r.HandleFunc("/users", CreateUser).Methods("POST", "PUT")
 	r.HandleFunc("/health", HealthCheck) // no .Methods() -> every method
 	r.HandleFunc("/items/{id:[0-9]+}", GetItem).Methods("GET")
-	r.HandleFunc("/static/{rest:.*}", StaticHandler).Methods("GET") // catch-all -> {rest}
+	r.HandleFunc("/quantifier/{id:[a-z]{3}}", QuantifierHandler).Methods("GET")            // regex with a {n} quantifier -> {id}
+	r.HandleFunc("/anchored/{id:^sig_([a-zA-Z0-9]{22})$}", AnchoredHandler).Methods("GET") // full anchored pattern with braces -> {id}
+	r.HandleFunc("/static/{rest:.*}", StaticHandler).Methods("GET")                        // catch-all -> {rest}
 	r.HandleFunc("/ping", func(w http.ResponseWriter, req *http.Request) {}).Methods("GET")
 	r.HandleFunc("/secure", SecureHandler).Schemes("https").Methods("GET") // methods through a builder
 
@@ -136,6 +138,8 @@ func GetUser(w http.ResponseWriter, r *http.Request)           {}
 func CreateUser(w http.ResponseWriter, r *http.Request)        {}
 func HealthCheck(w http.ResponseWriter, r *http.Request)       {}
 func GetItem(w http.ResponseWriter, r *http.Request)           {}
+func QuantifierHandler(w http.ResponseWriter, r *http.Request) {}
+func AnchoredHandler(w http.ResponseWriter, r *http.Request)   {}
 func StaticHandler(w http.ResponseWriter, r *http.Request)     {}
 func SecureHandler(w http.ResponseWriter, r *http.Request)     {}
 func WrappedHandler(w http.ResponseWriter, r *http.Request)    {}

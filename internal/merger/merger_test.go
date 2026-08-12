@@ -65,8 +65,14 @@ func TestMerge_DeclaredWinsWhenSet(t *testing.T) {
 	if len(out.Tags) != 1 || out.Tags[0] != "declared-tag" {
 		t.Errorf("Tags = %+v, want declared value", out.Tags)
 	}
-	if len(out.Parameters) != 1 || out.Parameters[0].Name != "declared-param" {
-		t.Errorf("Parameters = %+v, want declared value", out.Parameters)
+	// Parameters merge by (in, name): these two don't match, so both are
+	// kept — the inferred query param and the added declared path param.
+	if len(out.Parameters) != 2 {
+		t.Fatalf("Parameters = %+v, want the inferred and declared params both present", out.Parameters)
+	}
+	names := map[string]bool{out.Parameters[0].Name: true, out.Parameters[1].Name: true}
+	if !names["inferred-param"] || !names["declared-param"] {
+		t.Errorf("Parameters = %+v, want inferred-param kept and declared-param added", out.Parameters)
 	}
 	if out.RequestBody == nil || out.RequestBody.Description != "declared body" {
 		t.Errorf("RequestBody = %+v, want declared value", out.RequestBody)
@@ -157,6 +163,43 @@ func TestMerge_DeclaredExampleKeepsInferredSchema(t *testing.T) {
 	}
 	if mt.Example == nil {
 		t.Errorf("Example is nil, want the declared example added")
+	}
+}
+
+func TestMerge_DeclaredParameterEnrichesInferred(t *testing.T) {
+	// A declared parameter matching an inferred one by (in, name) enriches
+	// it: the declared description and constrained schema win, while the
+	// inferred required flag it doesn't mention is preserved.
+	inferred := &model.Operation{
+		Parameters: []model.Parameter{
+			{Name: "id", In: "path", Required: true, Schema: &model.Schema{Type: "string"}},
+		},
+	}
+	declared := &model.Operation{
+		Parameters: []model.Parameter{
+			{
+				Name:        "id",
+				In:          "path",
+				Description: "The signature id.",
+				Schema:      &model.Schema{Type: "string", Pattern: "^sig_([a-zA-Z0-9]{22})$"},
+			},
+		},
+	}
+
+	out := merger.Merge(inferred, declared)
+
+	if len(out.Parameters) != 1 {
+		t.Fatalf("Parameters = %+v, want the one enriched param, not a duplicate", out.Parameters)
+	}
+	p := out.Parameters[0]
+	if p.Description != "The signature id." {
+		t.Errorf("Description = %q, want the declared value", p.Description)
+	}
+	if !p.Required {
+		t.Errorf("Required = false, want the inferred true preserved")
+	}
+	if p.Schema == nil || p.Schema.Pattern != "^sig_([a-zA-Z0-9]{22})$" {
+		t.Errorf("Schema = %+v, want the declared pattern", p.Schema)
 	}
 }
 

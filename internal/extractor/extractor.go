@@ -65,26 +65,8 @@ func findBlock(doc *ast.CommentGroup, want string, exclude ...string) (string, b
 		return "", false, nil
 	}
 	lines := commentLines(doc)
-
-	start := -1
-	firstLineRest := ""
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if isExcluded(trimmed, exclude) {
-			continue
-		}
-		if trimmed == want {
-			start = i + 1
-			break
-		}
-		if rest, ok := strings.CutPrefix(trimmed, want); ok && strings.TrimSpace(rest) != "" {
-			// Inline form: "gota: {summary: ...}" all on one line.
-			start = i
-			firstLineRest = rest
-			break
-		}
-	}
-	if start == -1 {
+	marker, end, firstLineRest, found := locateBlock(lines, want, exclude)
+	if !found {
 		return "", false, nil
 	}
 
@@ -92,13 +74,117 @@ func findBlock(doc *ast.CommentGroup, want string, exclude ...string) (string, b
 	if firstLineRest != "" {
 		yamlLines = append(yamlLines, firstLineRest)
 	}
-	yamlLines = append(yamlLines, lines[start:]...)
+	yamlLines = append(yamlLines, lines[marker+1:end]...)
 
 	block := dedent(yamlLines)
 	if strings.TrimSpace(block) == "" {
 		return "", false, fmt.Errorf("extractor: empty %s block", want)
 	}
 	return block, true, nil
+}
+
+// locateBlock finds the want-marker block among lines and returns the index
+// of the marker line, the exclusive end index of the block body, any inline
+// remainder on the marker line, and whether a block was found. Lines
+// [marker+1, end) are the block body; everything outside [marker, end) is
+// ordinary prose. The body is bounded so it doesn't swallow the prose that
+// commonly follows a block (a gota:doc: block at the top of a package
+// comment is the prime case): after skipping the blank line gofmt inserts
+// right after the marker, the body runs until the first blank line, or the
+// first line flush with the left margin once the block has itself been
+// indented — either being where prose resumes.
+func locateBlock(lines []string, want string, exclude []string) (marker, end int, firstLineRest string, found bool) {
+	marker = -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isExcluded(trimmed, exclude) {
+			continue
+		}
+		if trimmed == want {
+			marker = i
+			break
+		}
+		if rest, ok := strings.CutPrefix(trimmed, want); ok && strings.TrimSpace(rest) != "" {
+			// Inline form: "gota: {summary: ...}" begins on the marker line.
+			marker, firstLineRest = i, rest
+			break
+		}
+	}
+	if marker == -1 {
+		return 0, 0, "", false
+	}
+
+	end = len(lines)
+	seenContent := firstLineRest != ""
+	indented := false
+	for j := marker + 1; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) == "" {
+			if seenContent {
+				end = j
+				break
+			}
+			continue
+		}
+		indent := len(lines[j]) - len(strings.TrimLeft(lines[j], " \t"))
+		if seenContent && indented && indent == 0 {
+			end = j
+			break
+		}
+		seenContent = true
+		if indent > 0 {
+			indented = true
+		}
+	}
+	return marker, end, firstLineRest, true
+}
+
+// Prose returns the human-readable text of doc with any "gota:" or
+// "gota:doc:" block removed — the handler's own documentation, which gota
+// uses as the operation description when the comment declares none.
+// Paragraph breaks are preserved; leading and trailing blank lines are
+// trimmed. It returns "" when nothing but a block (or nothing at all)
+// remains.
+func Prose(doc *ast.CommentGroup) string {
+	if doc == nil {
+		return ""
+	}
+	lines := commentLines(doc)
+
+	// Drop each block region (marker line through its bounded body). Remove
+	// gota:doc: first so the shorter "gota:" marker can't match a gota:doc:
+	// line; loop until none remain, though in practice there is at most one
+	// of each.
+	for _, spec := range []struct {
+		want    string
+		exclude []string
+	}{
+		{docMarker, nil},
+		{marker, []string{docMarker}},
+	} {
+		for {
+			m, end, _, found := locateBlock(lines, spec.want, spec.exclude)
+			if !found {
+				break
+			}
+			lines = append(lines[:m:m], lines[end:]...)
+		}
+	}
+
+	// Removing a block from the middle can leave two blank lines where its
+	// surrounding blanks met; collapse any such run to a single paragraph
+	// break so the description reads cleanly.
+	var kept []string
+	prevBlank := false
+	for _, line := range lines {
+		blank := strings.TrimSpace(line) == ""
+		if blank && prevBlank {
+			continue
+		}
+		kept = append(kept, line)
+		prevBlank = blank
+	}
+
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 // isExcluded reports whether trimmed begins with any marker in exclude.

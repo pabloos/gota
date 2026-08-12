@@ -11,7 +11,8 @@
 `gota` generates an OpenAPI 3.1 specification from Go source code. It's
 code-first with real static inference, not annotation-only:
 
-1. **AST inference** — routes, path parameters, handler names — everything
+1. **AST inference** — routes, path parameters, handler names, and a
+   handler's doc-comment prose as the operation description — everything
    deducible without programmer help, via `go/ast`, `go/types` and
    `golang.org/x/tools`.
 2. **`gota:` comments** — structured YAML fragments written directly in
@@ -78,7 +79,10 @@ then `s.HandleFunc("/users", H)` → `/api/v1/users`), transitively and
 inline-chained; a `NewRoute().Subrouter()` (a middleware-only subrouter)
 adds no segment but inherits the parent's prefix. A `{id:[0-9]+}`
 constraint (and a `{rest:.*}` catch-all) degrades to the bare `{id}` /
-`{rest}`. The handler passed to `Handle`/`HandleFunc` is commonly the real
+`{rest}` — including a regex that itself contains braces, such as a
+quantifier `{id:[a-z]{3}}` or a full anchored pattern
+`{id:^sig_([a-zA-Z0-9]{22})$}`, whose closing brace is found by balancing,
+not by stopping at the first `}`. The handler passed to `Handle`/`HandleFunc` is commonly the real
 handler wrapped in middleware — `r.Handle("/x",
 handlers.LoggingHandler(os.Stdout, H))`, `cors(opts)(H)`,
 `authMiddleware(H)` — and body inference sees through it by following the
@@ -298,14 +302,28 @@ comment. Responses and the request body merge **field by field**: adding
 an `example` under a `200` keeps the `schema` and `description` gota
 inferred for that same response, and a response code the comment doesn't
 mention is left in place — declared fields win only where they appear,
-they never wipe an inferred sibling. A `security:` requirement overrides
-the document-level default for that one operation, and its scheme name
+they never wipe an inferred sibling. The same field-level merge applies to
+`parameters` (matched by their `in`+`name` identity): declaring a
+`description` or a constrained `schema` — a `pattern`, `minLength`,
+`minimum`, … — for the `{id}` path parameter gota already inferred
+enriches it rather than replacing it, and the inferred `required` flag it
+doesn't mention is kept. A `security:` requirement overrides the
+document-level default for that one operation, and its scheme name
 resolves against the `securitySchemes` declared in `gota:doc:` (the
 generated document is validated as a whole, so a requirement naming an
 undefined scheme is caught). An explicit empty `security: []` is honored
 as written — it marks that operation public, overriding the global
 default, and is emitted rather than dropped (distinct from omitting
 `security` entirely, which inherits the default).
+
+A handler's own doc comment is its description. gota already derives the
+`summary` from the function name, so the prose a Go developer writes above
+the handler — everything except the `gota:` block, paragraph breaks
+preserved — becomes the operation `description`. A `description:` declared
+in the `gota:` block still wins; the prose only fills the gap. A `gota:`
+or `gota:doc:` block ends at the first blank comment line (or where the
+prose returns to the left margin), so ordinary package/handler
+documentation can sit in the same comment without being parsed as YAML.
 
 Other router plugins — Echo, Fiber — are not implemented yet; like Gin,
 they'd also need their own `inference.Dialect` (see the body inference
@@ -468,8 +486,8 @@ Core engine — everything router-agnostic:
 
 | Feature                          | What's tested                                                                                                                                              | Where |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|-------|
-| `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), no block present, invalid YAML, prose preceding the block, and `gota:doc:` document-level blocks kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
-| Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, responses/request body merge field-by-field (a declared example keeps the inferred schema/description), a declared `security` requirement is taken over an operation with none inferred, an explicit `security: []` round-trips | `internal/merger/merger_test.go` |
+| `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), inline form, no block present, invalid YAML, prose preceding *and following* the block (the block is bounded, not run to the comment's end), doc-comment prose extracted as the description, and `gota:doc:` document-level blocks kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
+| Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, responses/request body/parameters merge field-by-field (a declared example keeps the inferred schema/description; a declared parameter schema/description enriches the inferred one by `in`+`name`), a declared `security` requirement is taken over an operation with none inferred, an explicit `security: []` round-trips | `internal/merger/merger_test.go` |
 | Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
 | Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
 | Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, maps, basic types, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity, following a chain of same- or cross-package helpers up to four calls deep (both directions, cycle detection, nil-argument and variadic/arity-mismatch non-follow cases), map-literal envelopes (constant keys → inline object, dynamic key → bare object) | `internal/inference/body_test.go` |
