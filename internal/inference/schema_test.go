@@ -169,6 +169,33 @@ func TestResolveSchemaRefs_TimeTimeField(t *testing.T) {
 	}
 }
 
+func TestResolveSchemaRefs_ByteSliceAndMarshaler(t *testing.T) {
+	pkgs := loadFixture(t, "schema_marshaler")
+
+	doc := docWithRef("Event")
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
+		t.Fatalf("ResolveSchemaRefs: %v", err)
+	}
+
+	props := doc.Components.Schemas["Event"].Properties
+
+	// A []byte is a base64 string, not an array of integers.
+	raw := props["raw"]
+	if raw.Type != "string" || raw.Format != "byte" {
+		t.Errorf("raw property = %+v, want {type: string, format: byte}", raw)
+	}
+
+	// A type with its own MarshalJSON is a free-form object, not its
+	// underlying []byte and not a $ref to a walked component.
+	payload := props["payload"]
+	if payload.Type != "object" || payload.Ref != "" || payload.Format != "" || payload.Items != nil {
+		t.Errorf("payload property = %+v, want a free-form {type: object}", payload)
+	}
+	if _, registered := doc.Components.Schemas["RawJSON"]; registered {
+		t.Errorf("RawJSON must not be registered as a component; it controls its own JSON")
+	}
+}
+
 func TestResolveSchemaRefs_EmbeddedStructPromotesFields(t *testing.T) {
 	pkgs := loadFixture(t, "schema_embedded")
 

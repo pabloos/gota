@@ -396,6 +396,16 @@ func (r *registry) schemaForType(t types.Type) *model.Schema {
 		if isTimeTime(tt) {
 			return &model.Schema{Type: "string", Format: "date-time"}
 		}
+		// A type with its own MarshalJSON emits whatever that method
+		// produces, not its underlying Go representation — so inferring a
+		// schema from the underlying type (fields, a []byte, ...) would
+		// describe bytes that never go on the wire. The produced JSON can't
+		// be determined statically; a free-form object is a safe, honest
+		// approximation (time.Time, handled above, is the one shape we do
+		// know). This is the general case of the []byte handling below.
+		if implementsJSONMarshaler(tt) {
+			return &model.Schema{Type: "object"}
+		}
 		if _, isStruct := tt.Underlying().(*types.Struct); isStruct {
 			// A function-local named struct has no stable component name to
 			// $ref (it isn't package-scope), so inline it — the same as an
@@ -424,6 +434,12 @@ func (r *registry) schemaForType(t types.Type) *model.Schema {
 		// pointer field just resolves to its pointee's schema.
 		return r.schemaForType(tt.Elem())
 	case *types.Slice:
+		// encoding/json serializes a []byte slice as a base64 string, not
+		// element-by-element (unlike a [N]byte array, handled below). OpenAPI
+		// spells that "string" with "byte" format.
+		if isByteSlice(tt) {
+			return &model.Schema{Type: "string", Format: "byte"}
+		}
 		return &model.Schema{Type: "array", Items: r.schemaForType(tt.Elem())}
 	case *types.Array:
 		return &model.Schema{Type: "array", Items: r.schemaForType(tt.Elem())}
@@ -554,6 +570,49 @@ func isTimeTime(named *types.Named) bool {
 	obj := named.Obj()
 	pkg := obj.Pkg()
 	return pkg != nil && pkg.Path() == "time" && obj.Name() == "Time"
+}
+
+// isByteSlice reports whether t is a slice whose element is a byte (uint8)
+// — the type encoding/json base64-encodes into a string.
+func isByteSlice(t types.Type) bool {
+	s, ok := t.Underlying().(*types.Slice)
+	if !ok {
+		return false
+	}
+	b, ok := s.Elem().Underlying().(*types.Basic)
+	return ok && b.Kind() == types.Uint8
+}
+
+// implementsJSONMarshaler reports whether t (or its pointer, since
+// encoding/json uses the pointer method set for addressable struct fields)
+// has a MarshalJSON() ([]byte, error) method — the json.Marshaler
+// contract. Such a type controls its own JSON, so its Go representation
+// doesn't describe the wire format.
+func implementsJSONMarshaler(t types.Type) bool {
+	return hasMarshalJSON(t) || hasMarshalJSON(types.NewPointer(t))
+}
+
+func hasMarshalJSON(t types.Type) bool {
+	ms := types.NewMethodSet(t)
+	for i := 0; i < ms.Len(); i++ {
+		m := ms.At(i).Obj()
+		if m.Name() != "MarshalJSON" {
+			continue
+		}
+		sig, ok := m.Type().(*types.Signature)
+		if !ok {
+			continue
+		}
+		if sig.Params().Len() != 0 || sig.Results().Len() != 2 {
+			continue
+		}
+		if !isByteSlice(sig.Results().At(0).Type()) {
+			continue
+		}
+		errType := types.Universe.Lookup("error").Type()
+		return types.Identical(sig.Results().At(1).Type(), errType)
+	}
+	return false
 }
 
 // lookupType resolves a $ref name to a Go type. A name containing a "."

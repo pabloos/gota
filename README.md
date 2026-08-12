@@ -153,9 +153,14 @@ A `gota:` comment can declare `schema: {$ref: '#/components/schemas/User'}`,
 and gota generates that component automatically from the matching Go
 struct — fields, primitive types, `omitempty` → required/optional, nested
 structs as their own linked components, slices, maps, `time.Time`,
-embedding. The type lookup searches every package under `--dir`, not just
-the one containing the comment, so `User` can live in a different package
-than the handler that references it.
+embedding. A `[]byte` field is a base64 `string` (`format: byte`), matching
+how `encoding/json` encodes it. A type with its own `MarshalJSON` (a
+`json.Marshaler`, e.g. `json.RawMessage` or `gorm.io/datatypes.JSON`)
+controls its own wire format, so gota models it as a free-form `object`
+rather than describing its underlying Go representation — `time.Time` is
+the one such shape gota knows exactly. The type lookup searches every
+package under `--dir`, not just the one containing the comment, so `User`
+can live in a different package than the handler that references it.
 
 Handlers with **no** `gota:` comment at all also get a best-effort
 request/response schema, detected from the handler's own `encoding/json`
@@ -488,7 +493,7 @@ Core engine — everything router-agnostic:
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|-------|
 | `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), inline form, no block present, invalid YAML, prose preceding *and following* the block (the block is bounded, not run to the comment's end), doc-comment prose extracted as the description, and `gota:doc:` document-level blocks kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
 | Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, responses/request body/parameters merge field-by-field (a declared example keeps the inferred schema/description; a declared parameter schema/description enriches the inferred one by `in`+`name`), a declared `security` requirement is taken over an operation with none inferred, an explicit `security: []` round-trips | `internal/merger/merger_test.go` |
-| Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
+| Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, `[]byte`→base64 string, `json.Marshaler` types→free-form object, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
 | Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
 | Request/response body inference   | Decode/Unmarshal, Encode/Marshal (single call and "last wins"), slices, maps, basic types, branch-aware status codes, `http.Error`, non-constant `WriteHeader` args, `x-gota-skip` at operation and single-statement granularity, following a chain of same- or cross-package helpers up to four calls deep (both directions, cycle detection, nil-argument and variadic/arity-mismatch non-follow cases), map-literal envelopes (constant keys → inline object, dynamic key → bare object) | `internal/inference/body_test.go` |
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
