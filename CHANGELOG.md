@@ -6,6 +6,24 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.5.1]
+
+### Fixed
+
+- **A `[]byte` field is a base64 string, not an array of integers.**
+  `encoding/json` encodes a byte slice as a base64 `string`; gota now
+  models it as `{type: string, format: byte}` instead of walking it
+  element-by-element. (A `[N]byte` array, which `encoding/json` does emit
+  element-by-element, is unaffected.)
+- **A type with its own `MarshalJSON` is modeled from what it emits, not
+  its Go representation.** A `json.Marshaler` (e.g. `json.RawMessage`,
+  `gorm.io/datatypes.JSON`) controls its own wire format, so inferring
+  from the underlying type (a `[]byte`, a struct's fields) described bytes
+  that never go on the wire. Such a type is now a free-form `object` — the
+  honest approximation when the produced shape can't be determined
+  statically. `time.Time` remains the one `Marshaler` shape gota models
+  exactly (`date-time`), generalizing that existing special case.
+
 ## [0.5.0]
 
 ### Added
