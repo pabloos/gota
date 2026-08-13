@@ -6,6 +6,25 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.6.0]
+
+### Added
+
+- **`gota:doc:` accepts every top-level OpenAPI 3.1 field**, notably
+  `webhooks`, `externalDocs` and `jsonSchemaDialect`, which were silently
+  dropped before. `webhooks` is a first-class citizen: a `$ref` inside a
+  webhook operation resolves to its Go type exactly like one in a path,
+  and webhook operations are validated the same as paths (folded in for
+  the validation pass, since kin-openapi's 3.0 model rejects the 3.1
+  `webhooks` key outright).
+
+### Changed
+
+- **An unrecognized `gota:doc:` top-level key is reported on stderr**
+  instead of being dropped in silence — a typo, or an OpenAPI root key
+  gota manages itself (`paths`, `openapi`). Every field gota does apply
+  has its own model field, so anything else now surfaces a warning.
+
 ## [0.5.1]
 
 ### Fixed
