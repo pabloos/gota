@@ -8,13 +8,28 @@ import "net/http"
 
 // Document is the root of an OpenAPI 3.1 document.
 type Document struct {
-	OpenAPI    string                `yaml:"openapi" json:"openapi"`
-	Info       Info                  `yaml:"info" json:"info"`
-	Servers    []Server              `yaml:"servers,omitempty" json:"servers,omitempty"`
-	Security   []SecurityRequirement `yaml:"security,omitempty" json:"security,omitempty"`
-	Tags       []Tag                 `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Paths      Paths                 `yaml:"paths" json:"paths"`
-	Components *Components           `yaml:"components,omitempty" json:"components,omitempty"`
+	OpenAPI           string                 `yaml:"openapi" json:"openapi"`
+	Info              Info                   `yaml:"info" json:"info"`
+	JSONSchemaDialect string                 `yaml:"jsonSchemaDialect,omitempty" json:"jsonSchemaDialect,omitempty"`
+	Servers           []Server               `yaml:"servers,omitempty" json:"servers,omitempty"`
+	Security          []SecurityRequirement  `yaml:"security,omitempty" json:"security,omitempty"`
+	Tags              []Tag                  `yaml:"tags,omitempty" json:"tags,omitempty"`
+	ExternalDocs      *ExternalDocumentation `yaml:"externalDocs,omitempty" json:"externalDocs,omitempty"`
+	Paths             Paths                  `yaml:"paths" json:"paths"`
+	// Webhooks is the OpenAPI 3.1 top-level webhooks map: named webhook
+	// events whose values are Path Item Objects, the same shape as a path.
+	// gota never infers these — the backend fires them at client-registered
+	// URLs, they aren't routes — so they only ever arrive via a gota:doc:
+	// block.
+	Webhooks   map[string]*PathItem `yaml:"webhooks,omitempty" json:"webhooks,omitempty"`
+	Components *Components          `yaml:"components,omitempty" json:"components,omitempty"`
+}
+
+// ExternalDocumentation is an OpenAPI External Documentation Object,
+// referenced from the document root, a tag, or an operation.
+type ExternalDocumentation struct {
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	URL         string `yaml:"url" json:"url"`
 }
 
 type Info struct {
@@ -48,11 +63,20 @@ type SecurityRequirement map[string][]string
 // unmarshaled directly from the YAML under "gota:doc:", so its fields use
 // the OpenAPI vocabulary exactly.
 type DocumentMeta struct {
-	Info       *Info                 `yaml:"info,omitempty" json:"info,omitempty"`
-	Servers    []Server              `yaml:"servers,omitempty" json:"servers,omitempty"`
-	Security   []SecurityRequirement `yaml:"security,omitempty" json:"security,omitempty"`
-	Tags       []Tag                 `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Components *Components           `yaml:"components,omitempty" json:"components,omitempty"`
+	Info              *Info                  `yaml:"info,omitempty" json:"info,omitempty"`
+	JSONSchemaDialect string                 `yaml:"jsonSchemaDialect,omitempty" json:"jsonSchemaDialect,omitempty"`
+	Servers           []Server               `yaml:"servers,omitempty" json:"servers,omitempty"`
+	Security          []SecurityRequirement  `yaml:"security,omitempty" json:"security,omitempty"`
+	Tags              []Tag                  `yaml:"tags,omitempty" json:"tags,omitempty"`
+	ExternalDocs      *ExternalDocumentation `yaml:"externalDocs,omitempty" json:"externalDocs,omitempty"`
+	Webhooks          map[string]*PathItem   `yaml:"webhooks,omitempty" json:"webhooks,omitempty"`
+	Components        *Components            `yaml:"components,omitempty" json:"components,omitempty"`
+
+	// Extra collects any remaining top-level keys in the block that aren't
+	// document-level fields gota applies (a typo, or an OpenAPI root key
+	// gota manages itself, like paths). They're reported on stderr rather
+	// than silently dropped — see generate.applyDocMeta.
+	Extra map[string]any `yaml:",inline" json:"-"`
 }
 
 // Paths maps a URL path template (e.g. "/users/{id}") to its PathItem.

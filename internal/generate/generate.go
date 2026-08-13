@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
 	"sort"
 	"strings"
 	"unicode"
@@ -160,19 +161,19 @@ func Run(opts Options) (*model.Document, error) {
 		return nil, err
 	}
 
-	if err := inference.ResolveSchemaRefs(doc, pkgs, ambiguous); err != nil {
-		return nil, err
-	}
-
 	// Apply document-level "gota:doc:" declarations (securitySchemes, a
-	// global security requirement, servers, tags, richer info) last, so
-	// they overlay the generated paths/components without being touched by
-	// route inference or ref resolution.
+	// global security requirement, servers, tags, richer info, externalDocs,
+	// webhooks) before ref resolution, so a "$ref" written inside a webhook
+	// operation resolves to its Go type the same way a path operation's does.
 	docMeta, err := collectDocMeta(pkgs)
 	if err != nil {
 		return nil, err
 	}
 	applyDocMeta(doc, docMeta)
+
+	if err := inference.ResolveSchemaRefs(doc, pkgs, ambiguous); err != nil {
+		return nil, err
+	}
 
 	return doc, nil
 }
@@ -236,6 +237,24 @@ func mergeDocMeta(base, next *model.DocumentMeta) *model.DocumentMeta {
 	if len(next.Tags) > 0 {
 		base.Tags = next.Tags
 	}
+	if next.JSONSchemaDialect != "" {
+		base.JSONSchemaDialect = next.JSONSchemaDialect
+	}
+	if next.ExternalDocs != nil {
+		base.ExternalDocs = next.ExternalDocs
+	}
+	for k, v := range next.Webhooks {
+		if base.Webhooks == nil {
+			base.Webhooks = map[string]*model.PathItem{}
+		}
+		base.Webhooks[k] = v
+	}
+	for k, v := range next.Extra {
+		if base.Extra == nil {
+			base.Extra = map[string]any{}
+		}
+		base.Extra[k] = v
+	}
 	if next.Components != nil {
 		if base.Components == nil {
 			base.Components = &model.Components{}
@@ -286,6 +305,19 @@ func applyDocMeta(doc *model.Document, meta *model.DocumentMeta) {
 	if len(meta.Tags) > 0 {
 		doc.Tags = meta.Tags
 	}
+	if meta.JSONSchemaDialect != "" {
+		doc.JSONSchemaDialect = meta.JSONSchemaDialect
+	}
+	if meta.ExternalDocs != nil {
+		doc.ExternalDocs = meta.ExternalDocs
+	}
+	for k, v := range meta.Webhooks {
+		if doc.Webhooks == nil {
+			doc.Webhooks = map[string]*model.PathItem{}
+		}
+		doc.Webhooks[k] = v
+	}
+	warnUnknownDocKeys(meta.Extra)
 	if meta.Components == nil {
 		return
 	}
@@ -312,6 +344,25 @@ func applyDocMeta(doc *model.Document, meta *model.DocumentMeta) {
 				doc.Components.Schemas[k] = v
 			}
 		}
+	}
+}
+
+// warnUnknownDocKeys reports, on stderr, any top-level "gota:doc:" key gota
+// does not apply — a typo, or an OpenAPI root key gota manages itself
+// (openapi, paths). Every document-level field gota does support has its
+// own DocumentMeta field, so anything landing here would otherwise vanish
+// from the output with no trace.
+func warnUnknownDocKeys(extra map[string]any) {
+	if len(extra) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(os.Stderr, "gota: warning: gota:doc: key %q is not a document-level field gota applies — ignoring it\n", k)
 	}
 }
 

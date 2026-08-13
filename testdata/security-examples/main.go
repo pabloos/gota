@@ -14,6 +14,22 @@
 //	tags:
 //	  - name: signatures
 //	    description: Signature resources
+//	externalDocs:
+//	  description: Guides and tutorials
+//	  url: https://docs.example.com
+//	webhooks:
+//	  signatureCertified:
+//	    post:
+//	      summary: Signature certified
+//	      requestBody:
+//	        required: true
+//	        content:
+//	          application/json:
+//	            schema:
+//	              $ref: '#/components/schemas/Signature'
+//	      responses:
+//	        '200':
+//	          description: Acknowledged.
 //	security:
 //	  - BearerAuth: []
 //	components:

@@ -762,6 +762,26 @@ func TestRun_SecurityExamplesAndDocBlock(t *testing.T) {
 		t.Errorf("BearerAuth = %+v", scheme)
 	}
 
+	// Document-level 3.1 keys that gota can't infer: externalDocs and a
+	// webhooks section whose operation is a full Operation object.
+	if doc.ExternalDocs == nil || doc.ExternalDocs.URL != "https://docs.example.com" {
+		t.Errorf("ExternalDocs = %+v", doc.ExternalDocs)
+	}
+	hook := doc.Webhooks["signatureCertified"]
+	if hook == nil || hook.Post == nil {
+		t.Fatalf("Webhooks = %+v, want a signatureCertified with a post operation", doc.Webhooks)
+	}
+	if hook.Post.Summary != "Signature certified" {
+		t.Errorf("webhook post = %+v", hook.Post)
+	}
+	// The $ref inside the webhook resolved to the same expanded component a
+	// path uses (proving webhook operations take part in ref resolution).
+	hookBody := hook.Post.RequestBody
+	if hookBody == nil || hookBody.Content["application/json"].Schema == nil ||
+		hookBody.Content["application/json"].Schema.Ref != "#/components/schemas/Signature" {
+		t.Errorf("webhook requestBody = %+v, want a $ref to Signature", hookBody)
+	}
+
 	// Per-operation security on POST /signatures.
 	post := doc.Paths["/signatures"].Post
 	if post == nil {

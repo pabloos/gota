@@ -48,23 +48,21 @@ const schemaRefPrefix = "#/components/schemas/"
 func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous map[string]bool) error {
 	names := map[string]bool{}
 	refOps := map[string]map[string]bool{} // schema name -> set of operationIds that reference it, for actionable warnings
-	for _, item := range doc.Paths {
-		for _, op := range item.Operations() {
-			walkOperationSchemas(op, func(s *model.Schema) {
-				name, ok := refName(s.Ref)
-				if !ok {
-					return
+	eachOperation(doc, func(op *model.Operation) {
+		walkOperationSchemas(op, func(s *model.Schema) {
+			name, ok := refName(s.Ref)
+			if !ok {
+				return
+			}
+			names[name] = true
+			if op.OperationID != "" {
+				if refOps[name] == nil {
+					refOps[name] = map[string]bool{}
 				}
-				names[name] = true
-				if op.OperationID != "" {
-					if refOps[name] == nil {
-						refOps[name] = map[string]bool{}
-					}
-					refOps[name][op.OperationID] = true
-				}
-			})
-		}
-	}
+				refOps[name][op.OperationID] = true
+			}
+		})
+	})
 	if len(names) == 0 {
 		return nil
 	}
@@ -124,14 +122,29 @@ func ResolveSchemaRefs(doc *model.Document, pkgs []*packages.Package, ambiguous 
 // object identity while its parent resolves, never by this name lookup.
 func degradeRef(doc *model.Document, name string) {
 	target := schemaRefPrefix + name
+	eachOperation(doc, func(op *model.Operation) {
+		walkOperationSchemas(op, func(s *model.Schema) {
+			if s.Ref == target {
+				s.Ref = ""
+				s.Type = "object"
+			}
+		})
+	})
+}
+
+// eachOperation invokes fn for every Operation in doc — those under paths
+// and those under webhooks, whose values are Path Item Objects too — so
+// $ref resolution and degradation treat a webhook operation (declared in a
+// gota:doc: block) exactly like a path operation.
+func eachOperation(doc *model.Document, fn func(op *model.Operation)) {
 	for _, item := range doc.Paths {
 		for _, op := range item.Operations() {
-			walkOperationSchemas(op, func(s *model.Schema) {
-				if s.Ref == target {
-					s.Ref = ""
-					s.Type = "object"
-				}
-			})
+			fn(op)
+		}
+	}
+	for _, item := range doc.Webhooks {
+		for _, op := range item.Operations() {
+			fn(op)
 		}
 	}
 }

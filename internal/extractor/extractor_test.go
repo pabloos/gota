@@ -332,6 +332,47 @@ func setup() {}
 	}
 }
 
+func TestExtractDoc_WebhooksExternalDocsAndUnknownKey(t *testing.T) {
+	doc := docOf(t, `
+// gota:doc:
+//   externalDocs:
+//     description: Guides
+//     url: https://docs.example.com
+//   webhooks:
+//     evidenceCertified:
+//       post:
+//         summary: Evidence certified
+//         responses:
+//           '200':
+//             description: Acknowledged.
+//   jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base
+//   mystery: dropped
+func setup() {}
+`)
+	meta, found, err := extractor.ExtractDoc(doc)
+	if err != nil {
+		t.Fatalf("ExtractDoc: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected a gota:doc: block")
+	}
+	if meta.ExternalDocs == nil || meta.ExternalDocs.URL != "https://docs.example.com" {
+		t.Errorf("ExternalDocs = %+v", meta.ExternalDocs)
+	}
+	hook := meta.Webhooks["evidenceCertified"]
+	if hook == nil || hook.Post == nil || hook.Post.Summary != "Evidence certified" {
+		t.Fatalf("Webhooks = %+v, want evidenceCertified.post", meta.Webhooks)
+	}
+	if meta.JSONSchemaDialect == "" {
+		t.Errorf("JSONSchemaDialect was not captured")
+	}
+	// An unrecognized key is captured (for a stderr warning), not silently
+	// dropped nor mistaken for a modeled field.
+	if _, ok := meta.Extra["mystery"]; !ok {
+		t.Errorf("Extra = %+v, want the unknown key 'mystery' captured", meta.Extra)
+	}
+}
+
 func TestExtractDoc_IgnoresOperationBlock(t *testing.T) {
 	// A plain "gota:" operation block is not document-level.
 	doc := docOf(t, `

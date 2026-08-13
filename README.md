@@ -272,10 +272,12 @@ being newly resolved.
 
 Some OpenAPI belongs to the whole document, not any single handler:
 authentication (`components.securitySchemes` plus a global `security`
-requirement), `servers`, top-level `tags`, and a richer `info` block.
-None of it is inferable from code. Declare it once in a `gota:doc:` block
-— raw document-level OpenAPI, in any doc comment in the analyzed source
-(a package comment is the natural home):
+requirement), `servers`, top-level `tags`, a richer `info` block,
+`externalDocs`, and `webhooks` (events the backend fires at
+client-registered URLs — not routes any router exposes). None of it is
+inferable from code. Declare it once in a `gota:doc:` block — raw
+document-level OpenAPI, in any doc comment in the analyzed source (a
+package comment is the natural home):
 
 ```go
 // gota:doc:
@@ -283,6 +285,21 @@ None of it is inferable from code. Declare it once in a `gota:doc:` block
 //     description: A signatures API secured with a bearer token.
 //   security:
 //     - BearerAuth: []
+//   externalDocs:
+//     description: Guides and tutorials
+//     url: https://docs.example.com
+//   webhooks:
+//     signatureCertified:
+//       post:
+//         summary: Signature certified
+//         requestBody:
+//           content:
+//             application/json:
+//               schema:
+//                 $ref: '#/components/schemas/Signature'
+//         responses:
+//           '200':
+//             description: Acknowledged.
 //   components:
 //     securitySchemes:
 //       BearerAuth:
@@ -294,12 +311,17 @@ package main
 
 `gota:doc:` overlays the generated document: its `info` fields override
 the CLI-provided `--title`/`--version` and add a description; `servers`,
-`security` and `tags` are set when present; `securitySchemes` (and any
-manually declared `schemas`) merge into `components` without clobbering
-schemas gota inferred from real code. A project normally has one such
-block; if several appear they're merged in a deterministic order. The
-marker is distinct from the per-handler `gota:` — a `gota:doc:` block is
-never mistaken for an operation, and vice versa.
+`security`, `tags`, `externalDocs`, `webhooks` and `jsonSchemaDialect` are
+set when present; `securitySchemes` (and any manually declared `schemas`)
+merge into `components` without clobbering schemas gota inferred from real
+code. Every top-level field of the OpenAPI 3.1 root object is accepted; a
+`$ref` inside a webhook operation resolves to its Go type exactly like one
+in a path, and webhook operations are validated the same as paths. A key
+gota doesn't recognize (a typo, or `paths`/`openapi`, which gota owns) is
+reported on stderr rather than dropped in silence. A project normally has
+one such block; if several appear they're merged in a deterministic order.
+The marker is distinct from the per-handler `gota:` — a `gota:doc:` block
+is never mistaken for an operation, and vice versa.
 
 Per-operation `security` and per-response `example`/`examples` are
 ordinary OpenAPI too, so they're written in a handler's own `gota:`
@@ -491,7 +513,7 @@ Core engine — everything router-agnostic:
 
 | Feature                          | What's tested                                                                                                                                              | Where |
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|-------|
-| `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), inline form, no block present, invalid YAML, prose preceding *and following* the block (the block is bounded, not run to the comment's end), doc-comment prose extracted as the description, and `gota:doc:` document-level blocks kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
+| `gota:` comment extraction        | Full blocks, gofmt-reformatted comments (tab-indent, inserted blank line), inline form, no block present, invalid YAML, prose preceding *and following* the block (the block is bounded, not run to the comment's end), doc-comment prose extracted as the description, `gota:doc:` document-level blocks (webhooks/externalDocs/jsonSchemaDialect captured, an unknown key surfaced for a warning) kept disjoint from per-handler `gota:` blocks in both directions | `internal/extractor/extractor_test.go` |
 | Merge semantics                   | Declared fields always win, inferred fields fill gaps, inputs aren't mutated, `Deprecated` can't be unset once set, responses/request body/parameters merge field-by-field (a declared example keeps the inferred schema/description; a declared parameter schema/description enriches the inferred one by `in`+`name`), a declared `security` requirement is taken over an operation with none inferred, an explicit `security: []` round-trips | `internal/merger/merger_test.go` |
 | Schema `$ref` resolution          | Primitives + `omitempty`→required, nested structs as linked components, slices, `time.Time`, `[]byte`→base64 string, `json.Marshaler` types→free-form object, embedded-field promotion, reference cycles, unknown/ambiguous type names | `internal/inference/schema_test.go` |
 | Generic type instantiation         | A single-type-parameter generic (`Response[T]`) instantiated with a named struct resolves to its own component with substituted fields; two distinct instantiations don't collide on one component | `internal/inference/schema_test.go`, `internal/inference/body_test.go` |
@@ -499,7 +521,7 @@ Core engine — everything router-agnostic:
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal; `security-examples` fixture proving a `gota:doc:` block (securitySchemes, global security, servers, tags, info description), a per-operation `security`, and response `examples` all land in a document that validates | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal; `security-examples` fixture proving a `gota:doc:` block (securitySchemes, global security, servers, tags, info description, `externalDocs`, and a `webhooks` section whose operation `$ref`s a component and is validated like a path), a per-operation `security`, and response `examples` all land in a document that validates; an unrecognized `gota:doc:` key warns on stderr instead of vanishing | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
 router's API:
