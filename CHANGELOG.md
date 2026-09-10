@@ -6,6 +6,28 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.7.0]
+
+### Added
+
+- **Pointer fields are modeled as nullable (OpenAPI 3.1).** A `*T` field can
+  serialize to JSON `null`, so gota now says so: a scalar becomes a type
+  array (`*string` → `type: [string, "null"]`), and a referenced struct
+  becomes `anyOf: [{$ref}, {type: "null"}]` (a `$ref` can't carry a sibling
+  `type`). `time.Time`'s `date-time` format is preserved alongside null.
+  Nullability is independent of `required`, which `omitempty` still governs.
+  Previously a pointer resolved to its pointee's schema with the null
+  dropped — a spec that claimed a value was never null when it could be.
+
+### Changed
+
+- `model.Schema.Type` is now `any` (a string, or a `[]string` for a nullable
+  type array), and `model.Schema` gains `AnyOf`.
+- The validation pass downgrades the 3.1 nullable forms (type arrays and
+  `type: null`) to a shape kin-openapi's 3.0 model accepts — the same
+  approach already used for top-level `webhooks` — so validation still
+  covers the rest of the document while the emitted output stays 3.1.
+
 ## [0.6.0]
 
 ### Added
