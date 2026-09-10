@@ -246,19 +246,27 @@ type SecurityScheme struct {
 
 // Schema is a (partial) JSON Schema / OpenAPI Schema Object.
 type Schema struct {
-	Ref                  string             `yaml:"$ref,omitempty" json:"$ref,omitempty"`
-	Type                 string             `yaml:"type,omitempty" json:"type,omitempty"`
-	Format               string             `yaml:"format,omitempty" json:"format,omitempty"`
-	Description          string             `yaml:"description,omitempty" json:"description,omitempty"`
-	Items                *Schema            `yaml:"items,omitempty" json:"items,omitempty"`
-	Properties           map[string]*Schema `yaml:"properties,omitempty" json:"properties,omitempty"`
-	Required             []string           `yaml:"required,omitempty" json:"required,omitempty"`
-	Enum                 []any              `yaml:"enum,omitempty" json:"enum,omitempty"`
-	AdditionalProperties *Schema            `yaml:"additionalProperties,omitempty" json:"additionalProperties,omitempty"`
-	Default              any                `yaml:"default,omitempty" json:"default,omitempty"`
-	Nullable             bool               `yaml:"nullable,omitempty" json:"nullable,omitempty"`
-	Example              any                `yaml:"example,omitempty" json:"example,omitempty"`
-	Examples             []any              `yaml:"examples,omitempty" json:"examples,omitempty"`
+	Ref string `yaml:"$ref,omitempty" json:"$ref,omitempty"`
+	// Type is a string for an ordinary type ("object", "string", ...) and a
+	// []string for an OpenAPI 3.1 nullable type ("string" + "null", i.e.
+	// `type: [string, "null"]`). It's `any` so both forms marshal natively;
+	// a nil value is omitted.
+	Type        any                `yaml:"type,omitempty" json:"type,omitempty"`
+	Format      string             `yaml:"format,omitempty" json:"format,omitempty"`
+	Description string             `yaml:"description,omitempty" json:"description,omitempty"`
+	Items       *Schema            `yaml:"items,omitempty" json:"items,omitempty"`
+	Properties  map[string]*Schema `yaml:"properties,omitempty" json:"properties,omitempty"`
+	Required    []string           `yaml:"required,omitempty" json:"required,omitempty"`
+	Enum        []any              `yaml:"enum,omitempty" json:"enum,omitempty"`
+	// AnyOf expresses a nullable reference — `anyOf: [{$ref}, {type: null}]`
+	// — since a "$ref" can't carry a sibling "type". Scalars use the type
+	// array above instead.
+	AnyOf                []*Schema `yaml:"anyOf,omitempty" json:"anyOf,omitempty"`
+	AdditionalProperties *Schema   `yaml:"additionalProperties,omitempty" json:"additionalProperties,omitempty"`
+	Default              any       `yaml:"default,omitempty" json:"default,omitempty"`
+	Nullable             bool      `yaml:"nullable,omitempty" json:"nullable,omitempty"`
+	Example              any       `yaml:"example,omitempty" json:"example,omitempty"`
+	Examples             []any     `yaml:"examples,omitempty" json:"examples,omitempty"`
 
 	// Validation keywords a hand-written "gota:" schema commonly carries.
 	// gota never infers these (they're constraints, not shapes), so they

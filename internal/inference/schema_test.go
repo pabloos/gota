@@ -102,7 +102,7 @@ func TestResolveSchemaRefs_PrimitivesAndOmitempty(t *testing.T) {
 
 	// The response schema itself must now be a bare $ref, not inflated inline.
 	respSchema := doc.Paths["/x"].Get.Responses["200"].Content["application/json"].Schema
-	if respSchema.Ref != schemaRefPrefix+"User" || respSchema.Type != "" {
+	if respSchema.Ref != schemaRefPrefix+"User" || respSchema.Type != nil {
 		t.Errorf("response schema = %+v, want a bare $ref", respSchema)
 	}
 }
@@ -216,6 +216,57 @@ func TestResolveSchemaRefs_EmbeddedStructPromotesFields(t *testing.T) {
 	}
 }
 
+func TestResolveSchemaRefs_NullablePointers(t *testing.T) {
+	pkgs := loadFixture(t, "schema_nullable")
+
+	doc := docWithRef("User")
+	if err := ResolveSchemaRefs(doc, pkgs, nil); err != nil {
+		t.Fatalf("ResolveSchemaRefs: %v", err)
+	}
+	user := doc.Components.Schemas["User"]
+
+	// A non-pointer field keeps a plain scalar type.
+	if user.Properties["name"].Type != "string" {
+		t.Errorf("name type = %v, want plain \"string\"", user.Properties["name"].Type)
+	}
+
+	// A pointer scalar becomes a [T, "null"] type array.
+	if base, ok := nullableScalar(user.Properties["nick"]); !ok || base != "string" {
+		t.Errorf("nick type = %v, want [string, null]", user.Properties["nick"].Type)
+	}
+
+	// A nullable time keeps its format alongside the null type.
+	since := user.Properties["since"]
+	if base, ok := nullableScalar(since); !ok || base != "string" || since.Format != "date-time" {
+		t.Errorf("since = %+v, want [string, null] with format date-time", since)
+	}
+
+	// A pointer to a struct becomes anyOf: [{$ref}, {type: null}], and the
+	// referenced type is still expanded as its own component.
+	if ref := nullableRef(user.Properties["address"]); ref != schemaRefPrefix+"Address" {
+		t.Errorf("address = %+v, want a nullable $ref to Address", user.Properties["address"])
+	}
+	if doc.Components.Schemas["Address"] == nil {
+		t.Errorf("Address was not expanded into its own component")
+	}
+
+	// Nullability is orthogonal to required: name (no omitempty) is required;
+	// the nullable pointer fields (omitempty) are not.
+	if !contains(user.Required, "name") || contains(user.Required, "nick") {
+		t.Errorf("Required = %+v, want [name] only", user.Required)
+	}
+}
+
+// nullableScalar returns the base type of a nullable scalar schema
+// (type: [T, "null"]) and whether s is one.
+func nullableScalar(s *model.Schema) (string, bool) {
+	arr, ok := s.Type.([]string)
+	if !ok || len(arr) != 2 || arr[1] != "null" {
+		return "", false
+	}
+	return arr[0], true
+}
+
 func TestResolveSchemaRefs_HandlesCycles(t *testing.T) {
 	pkgs := loadFixture(t, "schema_cycles")
 
@@ -232,12 +283,24 @@ func TestResolveSchemaRefs_HandlesCycles(t *testing.T) {
 	if !ok {
 		t.Fatalf("B was not registered")
 	}
-	if a.Properties["b"].Ref != schemaRefPrefix+"B" {
-		t.Errorf("A.b = %+v, want $ref to B", a.Properties["b"])
+	// The cross-referencing fields are pointers (a self-referential cycle
+	// requires them), so each resolves to a nullable reference —
+	// anyOf: [{$ref}, {type: null}] — not a bare $ref.
+	if ref := nullableRef(a.Properties["b"]); ref != schemaRefPrefix+"B" {
+		t.Errorf("A.b = %+v, want a nullable $ref to B", a.Properties["b"])
 	}
-	if b.Properties["a"].Ref != schemaRefPrefix+"A" {
-		t.Errorf("B.a = %+v, want $ref to A", b.Properties["a"])
+	if ref := nullableRef(b.Properties["a"]); ref != schemaRefPrefix+"A" {
+		t.Errorf("B.a = %+v, want a nullable $ref to A", b.Properties["a"])
 	}
+}
+
+// nullableRef returns the referenced component of a nullable reference
+// schema (anyOf: [{$ref}, {type: null}]), or "" if s isn't one.
+func nullableRef(s *model.Schema) string {
+	if s == nil || len(s.AnyOf) != 2 {
+		return ""
+	}
+	return s.AnyOf[0].Ref
 }
 
 // TestResolveSchemaRefs_UnknownTypeDegrades pins that a $ref with no

@@ -15,12 +15,12 @@ import (
 )
 
 type PageResponse[T any] struct {
-	Total int  `json:"total"`
-	List  []*T `json:"list"`
+	Total int `json:"total"`
+	List  []T `json:"list"`
 }
 
 func listSignatures(w http.ResponseWriter, r *http.Request) {
-	var list []*repository.Signature
+	var list []repository.Signature
 	json.NewEncoder(w).Encode(PageResponse[repository.Signature]{List: list})
 }
 

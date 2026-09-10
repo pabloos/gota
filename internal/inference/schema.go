@@ -254,6 +254,34 @@ func walkSchema(s *model.Schema, visit func(*model.Schema)) {
 	for _, prop := range s.Properties {
 		walkSchema(prop, visit)
 	}
+	for _, member := range s.AnyOf {
+		walkSchema(member, visit)
+	}
+}
+
+// nullType is the JSON Schema / OpenAPI 3.1 "null" type, used to express a
+// nullable value either as a member of a type array ([T, "null"]) or as an
+// anyOf member ({type: null}).
+const nullType = "null"
+
+// nullable makes s accept JSON null, for a pointer field. A scalar/object/
+// array schema (one with an inline "type") gains "null" in a type array —
+// `type: [string, "null"]`, the OpenAPI 3.1 form. A "$ref" can't carry a
+// sibling "type", so a referenced type is wrapped as
+// `anyOf: [{$ref}, {type: null}]`. A schema with no concrete type of its
+// own (e.g. an empty "any" schema) already admits null and is left as is.
+func nullable(s *model.Schema) *model.Schema {
+	if s == nil {
+		return s
+	}
+	if s.Ref != "" {
+		return &model.Schema{AnyOf: []*model.Schema{s, {Type: nullType}}}
+	}
+	if t, ok := s.Type.(string); ok && t != "" {
+		s.Type = []string{t, nullType}
+		return s
+	}
+	return s
 }
 
 // registry accumulates generated component schemas by name, generating
@@ -443,9 +471,10 @@ func (r *registry) schemaForType(t types.Type) *model.Schema {
 		// to its underlying representation directly.
 		return r.schemaForType(tt.Underlying())
 	case *types.Pointer:
-		// Nullability isn't modeled yet (known simplification) — a
-		// pointer field just resolves to its pointee's schema.
-		return r.schemaForType(tt.Elem())
+		// A pointer field can serialize to JSON null, so its schema is the
+		// pointee's, made nullable (see nullable). This is independent of
+		// whether the field is required (that's driven by omitempty).
+		return nullable(r.schemaForType(tt.Elem()))
 	case *types.Slice:
 		// encoding/json serializes a []byte slice as a base64 string, not
 		// element-by-element (unlike a [N]byte array, handled below). OpenAPI

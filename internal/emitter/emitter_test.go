@@ -122,6 +122,38 @@ func TestValidate_ValidDocumentPasses(t *testing.T) {
 	}
 }
 
+// TestValidate_AcceptsNullableSchemas pins down that the validation pass
+// tolerates the OpenAPI 3.1 nullable forms gota emits — a [T, "null"] type
+// array and an anyOf: [{$ref}, {type: null}] — even though kin-openapi's 3.0
+// model rejects the bare "null" type. The downgrade shim strips it for the
+// check while the emitted document keeps the 3.1 form.
+func TestValidate_AcceptsNullableSchemas(t *testing.T) {
+	doc, err := emitter.Build(model.Info{Title: "T", Version: "1.0.0"}, []emitter.RouteOperation{
+		{Method: http.MethodGet, Path: "/users", Operation: &model.Operation{
+			OperationID: "ListUsers",
+			Responses: map[string]model.Response{"200": {
+				Description: "OK",
+				Content: map[string]model.MediaType{"application/json": {Schema: &model.Schema{
+					Type: "object",
+					Properties: map[string]*model.Schema{
+						"nick":    {Type: []string{"string", "null"}},
+						"address": {AnyOf: []*model.Schema{{Ref: "#/components/schemas/Address"}, {Type: "null"}}},
+					},
+				}}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	doc.Components = &model.Components{Schemas: map[string]*model.Schema{
+		"Address": {Type: "object", Properties: map[string]*model.Schema{"city": {Type: "string"}}},
+	}}
+	if err := emitter.Validate(doc); err != nil {
+		t.Errorf("Validate() = %v, want nil for a document using 3.1 nullable forms", err)
+	}
+}
+
 // TestValidate_CatchesPathParamNotRequired pins down that Validate catches
 // a real mistake our own struct definitions don't prevent: OpenAPI requires
 // that a path parameter always have required: true, but nothing in

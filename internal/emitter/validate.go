@@ -28,6 +28,10 @@ func Validate(doc *model.Document) error {
 	if err != nil {
 		return fmt.Errorf("emitter: marshaling document for validation: %w", err)
 	}
+	data, err = downgradeNullTypes(data)
+	if err != nil {
+		return fmt.Errorf("emitter: preparing document for validation: %w", err)
+	}
 
 	loaded, err := openapi3.NewLoader().LoadFromData(data)
 	if err != nil {
@@ -37,6 +41,66 @@ func Validate(doc *model.Document) error {
 		return fmt.Errorf("emitter: generated document is not valid OpenAPI: %w", err)
 	}
 	return nil
+}
+
+// downgradeNullTypes rewrites the OpenAPI 3.1 way of expressing null —
+// `type: [T, "null"]` and an `anyOf` member `{type: "null"}` — into a form
+// kin-openapi v0.135's 3.0 model accepts, for the validation pass only.
+// kin loads a type array but rejects the "null" value at validation time,
+// so drop it: a `[T, "null"]` array collapses to `T`, and a `{type:"null"}`
+// anyOf member is removed. The real emitted document keeps the 3.1 form;
+// only these bytes, fed to the validator, are downgraded. Structural
+// validation (types, refs, required, examples) is unaffected.
+func downgradeNullTypes(data []byte) ([]byte, error) {
+	var root any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+	stripNull(root)
+	return json.Marshal(root)
+}
+
+func stripNull(v any) {
+	switch node := v.(type) {
+	case map[string]any:
+		if arr, ok := node["type"].([]any); ok {
+			kept := arr[:0:0]
+			for _, e := range arr {
+				if e != "null" {
+					kept = append(kept, e)
+				}
+			}
+			switch len(kept) {
+			case 0:
+				delete(node, "type")
+			case 1:
+				node["type"] = kept[0]
+			default:
+				node["type"] = kept
+			}
+		}
+		if arr, ok := node["anyOf"].([]any); ok {
+			kept := arr[:0:0]
+			for _, m := range arr {
+				if mm, ok := m.(map[string]any); ok && len(mm) == 1 && mm["type"] == "null" {
+					continue
+				}
+				kept = append(kept, m)
+			}
+			if len(kept) == 0 {
+				delete(node, "anyOf")
+			} else {
+				node["anyOf"] = kept
+			}
+		}
+		for _, child := range node {
+			stripNull(child)
+		}
+	case []any:
+		for _, e := range node {
+			stripNull(e)
+		}
+	}
 }
 
 // webhookValidationPrefix is the synthetic path prefix under which webhook
