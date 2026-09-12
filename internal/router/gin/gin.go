@@ -26,18 +26,25 @@
 //
 // The prefix of a route travels through the group VARIABLE it's
 // registered on (object identity), not lexical nesting: "v1 :=
-// r.Group("/api/v1")" then "v1.GET(...)". groupPrefix resolves that
-// chain. Known, deliberate residual gaps (declined, not guessed):
+// r.Group("/api/v1")" then "v1.GET(...)". groupPrefixes resolves that
+// chain.
 //
-//   - A function taking a *gin.RouterGroup parameter and registering
-//     routes on it (e.g. "func registerV1(rg *gin.RouterGroup) {
-//     rg.GET("/tags", ...) }") — its routes are declined, NOT walked at
-//     the empty prefix. This is the OPPOSITE posture from the chi
-//     plugin: gin group functions register RELATIVE paths (rg.GET("/tags")
-//     means the group's own prefix + "/tags"), so walking one at the
-//     empty prefix would emit "/tags" — a path gin never serves. A
-//     *gin.RouterGroup parameter has no prefix a single-package Extract
-//     can recover, so it's declined.
+// Routes registered inside a "register function" that takes a
+// *gin.RouterGroup parameter — the dominant real-world layout, e.g.
+// "func (h *Users) Routes(rg *gin.RouterGroup) { rg.GET("/tags", ...) }" —
+// are resolved too: collectParamPrefixes finds the call sites of such
+// functions in the package and gives the parameter the prefix of the group
+// passed there. Matching is by (call name, argument index), so it reaches
+// both a direct call ("registerTags(v1)") and an interface dispatch (a
+// "for _, h := range hs { h.Routes(g) }" registry loop, where every
+// concrete Routes(*gin.RouterGroup) is resolved under g's prefix). Nested
+// groups created inside the register function chain onto that prefix.
+//
+// Known, deliberate residual gaps (declined, not guessed):
+//
+//   - A register function whose only call site is in ANOTHER package: a
+//     single-package Extract can't see the prefix, so its routes stay
+//     declined (the same cross-package boundary as chi's Mount).
 //   - A group variable assigned more than once (ambiguous prefix), a
 //     non-constant Group path, a group whose receiver chain can't be
 //     resolved to a constant prefix, and a "*name" catch-all path.
@@ -116,6 +123,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 
 	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
 	groupDefs := collectGroupDefs(pkg)
+	paramPrefixes := collectParamPrefixes(pkg, groupDefs)
 
 	var routes []router.Route
 	for _, file := range pkg.Syntax {
@@ -128,7 +136,7 @@ func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
 			if !ok || !isRouteMethodName(sel.Sel.Name) || !isGinRouterMethodCall(pkg, sel) {
 				return true
 			}
-			routes = append(routes, extractRoute(pkg, call, sel, groupDefs, funcDecls)...)
+			routes = append(routes, extractRoute(pkg, call, sel, groupDefs, paramPrefixes, funcDecls)...)
 			return true
 		})
 	}
@@ -197,18 +205,18 @@ func collectGroupDefs(pkg *packages.Package) map[types.Object]groupDef {
 // the route (an unresolvable receiver — including a *gin.RouterGroup
 // parameter, see the package doc comment). It recurses through group
 // chains, guarding against a self-referential reassignment cycle.
-func groupPrefix(pkg *packages.Package, recvExpr ast.Expr, groupDefs map[types.Object]groupDef, visiting map[types.Object]bool) (string, bool) {
+func groupPrefixes(pkg *packages.Package, recvExpr ast.Expr, groupDefs map[types.Object]groupDef, paramPrefixes map[types.Object][]string, visiting map[types.Object]bool) ([]string, bool) {
 	// A *gin.Engine (a var, a parameter, or an inline gin.New()/
 	// gin.Default() call) is the root: empty prefix. Matched by type, so
 	// it doesn't matter how the engine was obtained.
 	if isGinNamedType(pkg.TypesInfo.TypeOf(recvExpr), "Engine") {
-		return "", true
+		return []string{""}, true
 	}
 	switch e := recvExpr.(type) {
 	case *ast.CallExpr:
 		sel, ok := e.Fun.(*ast.SelectorExpr)
 		if !ok || !isGinRouterMethodCall(pkg, sel) {
-			return "", false
+			return nil, false
 		}
 		switch sel.Sel.Name {
 		case "Use":
@@ -216,53 +224,200 @@ func groupPrefix(pkg *packages.Package, recvExpr ast.Expr, groupDefs map[types.O
 			// gin.IRoutes; it's transparent for the prefix, so recurse
 			// into its receiver: g.Group("/x").Use(mw).POST(...) keeps the
 			// "/x" prefix.
-			return groupPrefix(pkg, sel.X, groupDefs, visiting)
+			return groupPrefixes(pkg, sel.X, groupDefs, paramPrefixes, visiting)
 		case "Group":
 			// An inline chained group: X.Group("/v1").GET(...).
 			if len(e.Args) < 1 {
-				return "", false
+				return nil, false
 			}
 			path, ok := stringLiteral(e.Args[0])
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			parent, ok := groupPrefix(pkg, sel.X, groupDefs, visiting)
+			parents, ok := groupPrefixes(pkg, sel.X, groupDefs, paramPrefixes, visiting)
 			if !ok {
-				return "", false
+				return nil, false
 			}
-			return joinPath(parent, path), true
+			return joinAll(parents, path), true
 		}
-		return "", false
+		return nil, false
 	case *ast.Ident:
 		obj := pkg.TypesInfo.Uses[e]
 		if obj == nil || visiting[obj] {
-			return "", false
+			return nil, false
 		}
-		gd, ok := groupDefs[obj]
-		if !ok {
-			return "", false // untracked/ambiguous group var, or a *gin.RouterGroup parameter
+		if gd, ok := groupDefs[obj]; ok {
+			visiting[obj] = true
+			parents, ok := groupPrefixes(pkg, gd.recv, groupDefs, paramPrefixes, visiting)
+			if !ok {
+				return nil, false
+			}
+			return joinAll(parents, gd.path), true
 		}
-		visiting[obj] = true
-		parent, ok := groupPrefix(pkg, gd.recv, groupDefs, visiting)
-		if !ok {
-			return "", false
+		// A *gin.RouterGroup parameter: its prefixes come from the call
+		// sites of its enclosing register function (see collectParamPrefixes).
+		if ps, ok := paramPrefixes[obj]; ok && len(ps) > 0 {
+			return ps, true
 		}
-		return joinPath(parent, gd.path), true
+		return nil, false // untracked/ambiguous group var, or an unresolved parameter
+	}
+	return nil, false
+}
+
+// registerParam identifies a group-parameter register function by the call
+// name that invokes it and the positional index of its *gin.RouterGroup
+// argument — the pair a concrete method shares with the interface method it
+// implements, so a dynamic dispatch (h.Routes(rg)) matches every concrete
+// Routes(*gin.RouterGroup) the same way a direct call (registerUsers(rg))
+// matches its one function.
+type registerParam struct {
+	name  string
+	index int
+}
+
+// collectParamPrefixes maps each *gin.RouterGroup parameter that a route is
+// registered on to the set of path prefixes the calls in this package
+// invoke its function/method with — resolving the "register function"
+// idiom (func (h *Users) Routes(rg *gin.RouterGroup) { rg.GET(...) },
+// called as h.Routes(theGroup)), the dominant real-world layout. Matching
+// is by (call name, argument index), which reaches both a direct call and
+// an interface dispatch. Scope is a single package: a register function
+// whose call site is in another package stays declined (the documented
+// cross-package gap). Resolution iterates to a fixpoint so a register
+// function that passes its own group parameter to another one resolves too.
+func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]groupDef) map[types.Object][]string {
+	// Index group-parameter register functions by (name, arg index).
+	byNameIdx := map[registerParam][]types.Object{}
+	for _, file := range pkg.Syntax {
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Type.Params == nil {
+				continue
+			}
+			idx := 0
+			for _, field := range fn.Type.Params.List {
+				isGroup := isGinNamedType(pkg.TypesInfo.TypeOf(field.Type), "RouterGroup")
+				names := field.Names
+				if len(names) == 0 { // an unnamed parameter still occupies a position
+					idx++
+					continue
+				}
+				for _, nm := range names {
+					if isGroup {
+						if obj := pkg.TypesInfo.Defs[nm]; obj != nil {
+							key := registerParam{fn.Name.Name, idx}
+							byNameIdx[key] = append(byNameIdx[key], obj)
+						}
+					}
+					idx++
+				}
+			}
+		}
+	}
+	if len(byNameIdx) == 0 {
+		return nil
+	}
+
+	prefixes := map[types.Object][]string{}
+	for changed := true; changed; {
+		changed = false
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name, ok := calleeName(call.Fun)
+				if !ok {
+					return true
+				}
+				for i, arg := range call.Args {
+					objs, ok := byNameIdx[registerParam{name, i}]
+					if !ok {
+						continue
+					}
+					argType := pkg.TypesInfo.TypeOf(arg)
+					if !isGinNamedType(argType, "RouterGroup") && !isGinNamedType(argType, "Engine") {
+						continue
+					}
+					argPrefixes, ok := groupPrefixes(pkg, arg, groupDefs, prefixes, map[types.Object]bool{})
+					if !ok {
+						continue
+					}
+					for _, obj := range objs {
+						if addPrefixes(prefixes, obj, argPrefixes) {
+							changed = true
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	return prefixes
+}
+
+// calleeName returns the bare name a call expression invokes — the
+// identifier for a plain call, or the selected method name for a method
+// call — used to match a call site to a register function by name.
+func calleeName(fun ast.Expr) (string, bool) {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name, true
+	case *ast.SelectorExpr:
+		return f.Sel.Name, true
 	}
 	return "", false
+}
+
+// addPrefixes unions add into prefixes[obj], reporting whether it grew.
+func addPrefixes(prefixes map[types.Object][]string, obj types.Object, add []string) bool {
+	existing := prefixes[obj]
+	grew := false
+	for _, p := range add {
+		found := false
+		for _, e := range existing {
+			if e == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			existing = append(existing, p)
+			grew = true
+		}
+	}
+	if grew {
+		prefixes[obj] = existing
+	}
+	return grew
+}
+
+// joinAll joins sub onto every parent prefix, de-duplicating the result.
+func joinAll(parents []string, sub string) []string {
+	out := make([]string, 0, len(parents))
+	seen := map[string]bool{}
+	for _, p := range parents {
+		j := joinPath(p, sub)
+		if !seen[j] {
+			seen[j] = true
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // extractRoute turns one recognized route call into Routes, resolving
 // its prefix, path, method(s) and handler. Declines (nil) on any
 // unresolvable piece.
-func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorExpr, groupDefs map[types.Object]groupDef, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
-	prefix, ok := groupPrefix(pkg, sel.X, groupDefs, map[types.Object]bool{})
+func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorExpr, groupDefs map[types.Object]groupDef, paramPrefixes map[types.Object][]string, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
+	prefixes, ok := groupPrefixes(pkg, sel.X, groupDefs, paramPrefixes, map[types.Object]bool{})
 	if !ok {
 		return nil
 	}
 	switch name := sel.Sel.Name; name {
 	case "Any":
-		return routeAt(pkg, allMethods, call, 0, prefix, funcDecls)
+		return routeAt(pkg, allMethods, call, 0, prefixes, funcDecls)
 	case "Handle":
 		if len(call.Args) < 3 {
 			return nil
@@ -271,7 +426,7 @@ func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorEx
 		if !ok {
 			return nil
 		}
-		return routeAt(pkg, []string{strings.ToUpper(method)}, call, 1, prefix, funcDecls)
+		return routeAt(pkg, []string{strings.ToUpper(method)}, call, 1, prefixes, funcDecls)
 	case "Match":
 		if len(call.Args) < 3 {
 			return nil
@@ -280,9 +435,9 @@ func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorEx
 		if !ok {
 			return nil
 		}
-		return routeAt(pkg, methods, call, 1, prefix, funcDecls)
+		return routeAt(pkg, methods, call, 1, prefixes, funcDecls)
 	default:
-		return routeAt(pkg, []string{routeMethods[name]}, call, 0, prefix, funcDecls)
+		return routeAt(pkg, []string{routeMethods[name]}, call, 0, prefixes, funcDecls)
 	}
 }
 
@@ -292,15 +447,11 @@ func extractRoute(pkg *packages.Package, call *ast.CallExpr, sel *ast.SelectorEx
 // (e.g. CONNECT) is skipped. Declines the whole call (nil) if there's no
 // handler argument, the path isn't a literal, or the path has no OpenAPI
 // equivalent.
-func routeAt(pkg *packages.Package, methods []string, call *ast.CallExpr, pathIdx int, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
+func routeAt(pkg *packages.Package, methods []string, call *ast.CallExpr, pathIdx int, prefixes []string, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
 	if len(call.Args) < pathIdx+2 { // path + at least one handler
 		return nil
 	}
 	rawPath, ok := stringLiteral(call.Args[pathIdx])
-	if !ok {
-		return nil
-	}
-	path, ok := normalizePath(joinPath(prefix, rawPath))
 	if !ok {
 		return nil
 	}
@@ -309,20 +460,26 @@ func routeAt(pkg *packages.Package, methods []string, call *ast.CallExpr, pathId
 		return nil
 	}
 	var routes []router.Route
-	for _, m := range methods {
-		if !httpMethods[m] {
+	for _, prefix := range prefixes {
+		path, ok := normalizePath(joinPath(prefix, rawPath))
+		if !ok {
 			continue
 		}
-		routes = append(routes, router.Route{
-			Method:      m,
-			Path:        path,
-			HandlerName: handlerName,
-			HandlerDecl: decl,
-			File:        file,
-			HandlerObj:  obj,
-			HandlerLit:  lit,
-			Pos:         pkg.Fset.Position(call.Pos()),
-		})
+		for _, m := range methods {
+			if !httpMethods[m] {
+				continue
+			}
+			routes = append(routes, router.Route{
+				Method:      m,
+				Path:        path,
+				HandlerName: handlerName,
+				HandlerDecl: decl,
+				File:        file,
+				HandlerObj:  obj,
+				HandlerLit:  lit,
+				Pos:         pkg.Fset.Position(call.Pos()),
+			})
+		}
 	}
 	return routes
 }

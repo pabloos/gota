@@ -4,10 +4,10 @@
 // Group variables, inline chained Group, Any/Handle/Match, a ":id"
 // param, middleware-before-handler, an empty-prefix group whose route
 // path has no leading slash, a ".Use(mw)" chain, an inline func-literal
-// handler) plus the deliberately-declined
-// shapes (a "*catchall" path, a *gin.RouterGroup-parameter register
-// function, a reassigned group variable, a non-constant Handle method,
-// a handler-less call).
+// handler, a *gin.RouterGroup-parameter register function resolved to its
+// call-site prefix — direct call and interface-dispatch registry loop)
+// plus the deliberately-declined shapes (a "*catchall" path, a reassigned
+// group variable, a non-constant Handle method, a handler-less call).
 package fixture
 
 import (
@@ -46,7 +46,14 @@ func Register() {
 
 	r.GET("/files/*path", CatchAllHandler) // declined: catch-all has no OpenAPI equivalent
 
-	registerTags(v1) // declined: *gin.RouterGroup param -> relative paths, no recoverable prefix
+	// A register function taking a *gin.RouterGroup: its "/tags" resolves
+	// under v1's "/api/v1" prefix from this call site.
+	registerTags(v1)
+
+	// Interface-dispatch registration (the registry idiom): a loop calls
+	// Routes on a group with a known prefix; every concrete
+	// Routes(*gin.RouterGroup) is resolved under it, matched by name+position.
+	mountAPI(r, []apiRegistrar{widgets{}, gadgets{}})
 
 	rg := r.Group("/first")
 	rg = r.Group("/second") // reassigned -> ambiguous -> declined
@@ -57,8 +64,27 @@ func Register() {
 }
 
 func registerTags(rg *gin.RouterGroup) {
-	rg.GET("/tags", ListTags) // relative to rg's prefix, unknowable here
+	rg.GET("/tags", ListTags) // relative to the group passed at the call site
 }
+
+type apiRegistrar interface {
+	Routes(rg *gin.RouterGroup)
+}
+
+func mountAPI(r *gin.Engine, hs []apiRegistrar) {
+	g := r.Group("/api")
+	for _, h := range hs {
+		h.Routes(g) // dynamic dispatch; the group prefix "/api" is still static
+	}
+}
+
+type widgets struct{}
+
+func (widgets) Routes(rg *gin.RouterGroup) { rg.GET("/widgets", WidgetsHandler) }
+
+type gadgets struct{}
+
+func (gadgets) Routes(rg *gin.RouterGroup) { rg.POST("/gadgets", GadgetsHandler) }
 
 func methodName() string { return "GET" }
 
@@ -78,5 +104,7 @@ func CurrentUser(c *gin.Context)           {}
 func UpdateSettings(c *gin.Context)        {}
 func CatchAllHandler(c *gin.Context)       {}
 func ListTags(c *gin.Context)              {}
+func WidgetsHandler(c *gin.Context)        {}
+func GadgetsHandler(c *gin.Context)        {}
 func ReassignedHandler(c *gin.Context)     {}
 func DynamicHandler(c *gin.Context)        {}

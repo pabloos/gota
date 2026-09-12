@@ -64,11 +64,14 @@ becomes `{name}`; a `.Use(mw)` middleware chain
 handler — `r.GET("/version", func(c *gin.Context){ c.JSON(200, v) })` —
 is supported too: its body is inferred like any other, and since it has
 no name, its operationId is synthesized from the method and path
-(`GetVersion`). Because Gin group functions register *relative* paths,
-a `func reg(rg *gin.RouterGroup){...}` register function has no
-locally-recoverable prefix and its routes are declined (the opposite of
-Chi's absolute-path constructors) — as are `*name` catch-alls, reassigned
-group variables, and non-constant methods.
+(`GetVersion`). A `func reg(rg *gin.RouterGroup){...}` register function is
+resolved to the prefix of the group passed at its call site — direct call
+and interface-dispatch registry loop alike, matched by call name + argument
+position (the same mechanism as Echo's, below) — with nested groups inside
+chaining onto it; only a register function called solely from another
+package stays declined (the single-package boundary chi's `Mount` has). A
+`*name` catch-all, a reassigned group variable, and a non-constant method
+are still declined.
 
 Echo works the same way, off `*echo.Echo` and `*echo.Group` — the one
 structural difference from Gin is that Echo's handler sits at a *fixed*
@@ -92,9 +95,8 @@ name + argument position — so it resolves both a direct call
 [pagoda](https://github.com/mikestefanello/pagoda) use, with nested groups
 inside the function chaining onto the resolved prefix. A register function
 whose only call site is in another package stays declined — the same
-single-package boundary as chi's `Mount`. (This resolution is Echo-only for
-now; the Gin plugin still declines its `func(rg *gin.RouterGroup)`
-equivalent.)
+single-package boundary as chi's `Mount`. (The Gin plugin resolves its
+`func(rg *gin.RouterGroup)` equivalent the same way.)
 
 gorilla/mux routes are read off `r.HandleFunc(path, h)` / `r.Handle(path,
 h)`, with the HTTP methods taken from a `.Methods("GET", …)` chained onto
@@ -572,7 +574,7 @@ router's API:
 | Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | single-arg wrapper | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
 | Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a | n/a |
 | Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
-| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
+| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
 `internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`,

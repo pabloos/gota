@@ -158,13 +158,26 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
-	t.Run("a *gin.RouterGroup-parameter register function is declined, not walked at empty prefix", func(t *testing.T) {
-		// The anti-chi case: gin group functions use relative paths, so
-		// walking registerTags at the empty prefix would emit /tags — a
-		// path gin never serves (the real path is /api/v1/tags, which a
-		// single-package Extract can't recover).
+	t.Run("interface-dispatch registration resolves under the group's prefix", func(t *testing.T) {
+		// mountAPI loops `h.Routes(g)` on g = r.Group("/api"); every concrete
+		// Routes(*gin.RouterGroup) is matched by name+position and walked at "/api".
+		if _, ok := got["GET /api/widgets"]; !ok {
+			t.Errorf("routes = %+v, want GET /api/widgets from interface-dispatch registration", got)
+		}
+		if _, ok := got["POST /api/gadgets"]; !ok {
+			t.Errorf("routes = %+v, want POST /api/gadgets from interface-dispatch registration", got)
+		}
+	})
+
+	t.Run("a *gin.RouterGroup-parameter register function resolves to its call-site prefix", func(t *testing.T) {
+		// registerTags(rg *gin.RouterGroup) { rg.GET("/tags", ...) } is
+		// called as registerTags(v1), so its relative "/tags" resolves under
+		// v1's "/api/v1" prefix — not emitted bare at "/tags".
+		if _, ok := got["GET /api/v1/tags"]; !ok {
+			t.Errorf("routes = %+v, want GET /api/v1/tags (register func resolved via its call site)", got)
+		}
 		if _, ok := got["GET /tags"]; ok {
-			t.Errorf("routes = %+v, a *gin.RouterGroup-param register func must be declined, not emitted at /tags", got)
+			t.Errorf("routes = %+v, /tags must carry the call-site prefix, not be emitted bare", got)
 		}
 	})
 
