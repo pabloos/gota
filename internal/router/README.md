@@ -7,18 +7,20 @@ doc comment (`go doc github.com/pabloos/gota/internal/router/<name>`).
 
 `net/http`, [Chi](https://github.com/go-chi/chi),
 [Gin](https://github.com/gin-gonic/gin),
-[Echo](https://github.com/labstack/echo), and
+[Echo](https://github.com/labstack/echo),
+[Fiber](https://github.com/gofiber/fiber), and
 [gorilla/mux](https://github.com/gorilla/mux) are supported routers —
 every plugin runs unconditionally against every analyzed package (no flag
 needed to pick one; a plugin whose framework isn't present just
 contributes no routes). `net/http`, Chi, and gorilla/mux share the same
 net/http-based body inference, since their handlers are plain
 `func(w http.ResponseWriter, r *http.Request)` with no response-writing
-idiom of their own. Gin (`c.JSON(201, obj)`, `c.ShouldBindJSON(&x)`) and
-Echo (`c.JSON(201, obj)`, `c.Bind(&x)`, `c.NoContent(204)`), whose
-handlers write through a framework context, each bring their own
+idiom of their own. Gin (`c.JSON(201, obj)`, `c.ShouldBindJSON(&x)`),
+Echo (`c.JSON(201, obj)`, `c.Bind(&x)`, `c.NoContent(204)`), and Fiber
+(`c.Status(201).JSON(obj)`, `c.BodyParser(&x)`, `c.SendStatus(204)`),
+whose handlers write through a framework context, each bring their own
 `inference.Dialect` that embeds the net/http one — so a handler that falls
-back to `json.NewDecoder(...).Decode(&x)` is still understood.
+back to `json.Marshal`/`Decode` is still understood.
 
 Gin routes are read off the engine and off `Group` variables, whose
 prefix is accumulated by object identity (`v1 := r.Group("/api/v1")` then
@@ -63,6 +65,21 @@ inside the function chaining onto the resolved prefix. A register function
 whose only call site is in another package stays declined — the same
 single-package boundary as chi's `Mount`. (The Gin plugin resolves its
 `func(rg *gin.RouterGroup)` equivalent the same way.)
+
+Fiber is read off `*fiber.App` and the `fiber.Router` interface a group is
+typed as. Its route methods are named like Go methods (`app.Get`, `app.Post`,
+… plus `app.All` for every method and `app.Add(method, …)` for an explicit
+one); the handler is the last variadic argument (earlier ones are
+middleware), as in Gin. Groups accumulate their prefix by object identity,
+inline and nested; `:name` (an optional `?` suffix dropped) → `{name}` and a
+`*`/`+` wildcard is declined. The register-function layout resolves exactly
+as Gin's and Echo's — a `func(r fiber.Router)` parameter takes the prefix of
+the group passed at the call site (a `*fiber.App` parameter is the root). Its
+dialect is the one framework where the status isn't a response-call argument:
+`c.JSON(obj)` records at the ambient status, `c.Status(code)` sets it (read
+off the chain in `c.Status(201).JSON(obj)`), and `c.SendStatus(code)` is a
+bodyless response. The `app.Route(prefix, func(r fiber.Router){…})` callback
+form is not followed yet.
 
 gorilla/mux routes are read off `r.HandleFunc(path, h)` / `r.Handle(path,
 h)`, with the HTTP methods taken from a `.Methods("GET", …)` chained onto
@@ -144,38 +161,43 @@ check alongside the method check) falls outside this and the
 registration is left undetected, same as before this existed — not a
 partial or incorrect guess.
 
-## Not yet implemented
+## Known gaps
 
-Other router plugins — Fiber, for one — are not implemented yet; like Gin
-and Echo, one would also need its own `inference.Dialect` (see [schema & body inference](../inference/)), not just a router plugin.
+No further framework plugins are planned right now. The remaining
+route-extraction gaps are shared across the framework plugins: a register
+function whose only call site is in another package (the single-package
+boundary chi's `Mount` also has), and Fiber's `app.Route(prefix, func(r
+fiber.Router){…})` callback form. A new framework plugin would also need its
+own `inference.Dialect` (see [schema & body inference](../inference/)), not
+just route extraction.
 
 ## Feature matrix
 
 Router plugins — everything specific to reading routes out of a given
 router's API:
 
-| Feature                                    | `net/http` | Chi | Gin | Echo | gorilla/mux |
-|----------------------------------------------|:----------:|:---:|:---:|:---:|:---:|
-| Route extraction (method + path, incl. path params) | ✅ | ✅ | ✅ (`:name` → `{name}`) | ✅ (`:name` → `{name}`) | ✅ (`{name:re}` → `{name}`) |
-| Method-less / multi-method pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) | ✅ (`Any`; `Match([]string{…})` per constant method) | ✅ (`Any`; `Add(const)`; `Match([]string{…})` per constant method) | ✅ (no `.Methods()`; `.Methods("GET","POST")` per constant) |
-| Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) | ✅ (fixed arg after the path; later args are middleware) | ✅ |
-| Handler resolution: method value (bound method) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Handler resolution: cross-package reference    | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ✅ (explicit-method pattern only; a method-less inline closure is declined as dispatcher-ambiguous) | ✅ | ✅ | ✅ | ✅ |
-| Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | single-arg wrapper | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
-| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a | n/a |
-| Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
-| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
+| Feature                                    | `net/http` | Chi | Gin | Echo | Fiber | gorilla/mux |
+|----------------------------------------------|:----------:|:---:|:---:|:---:|:---:|:---:|
+| Route extraction (method + path, incl. path params) | ✅ | ✅ | ✅ (`:name` → `{name}`) | ✅ (`:name` → `{name}`) | ✅ (`:name`/`:name?` → `{name}`) | ✅ (`{name:re}` → `{name}`) |
+| Method-less / multi-method pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) | ✅ (`Any`; `Match([]string{…})` per constant method) | ✅ (`Any`; `Add(const)`; `Match([]string{…})` per constant method) | ✅ (`All`; `Add(const)` per method) | ✅ (no `.Methods()`; `.Methods("GET","POST")` per constant) |
+| Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) | ✅ (fixed arg after the path; later args are middleware) | ✅ (last variadic arg; earlier args are middleware) | ✅ |
+| Handler resolution: method value (bound method) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Handler resolution: cross-package reference    | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ✅ (explicit-method pattern only; a method-less inline closure is declined as dispatcher-ambiguous) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | single-arg wrapper | single-arg wrapper | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
+| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a | n/a | n/a |
+| Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
+| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | ✅ register function taking a `fiber.Router`/`*fiber.App` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
 `internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`,
-`internal/router/echo/echo_test.go`,
+`internal/router/echo/echo_test.go`, `internal/router/fiber/fiber_test.go`,
 `internal/router/gorilla/gorilla_test.go` (each framework fixture at
 `internal/router/<name>/testdata/routes`, its own Go module — chi, gin,
-echo, and gorilla/mux are test-only dependencies, isolated so they never
-bump gota's own `go.mod` floor; same reasoning for `testdata/chi-basic`,
-used by `TestRun_ChiBasic`, and `testdata/echo-basic`, used by
-`TestRun_EchoBasic`). Cross-package resolution itself is plugin-agnostic
+echo, fiber, and gorilla/mux are test-only dependencies, isolated so they
+never bump gota's own `go.mod` floor; same reasoning for `testdata/chi-basic`
+(`TestRun_ChiBasic`), `testdata/echo-basic` (`TestRun_EchoBasic`), and
+`testdata/fiber-basic` (`TestRun_FiberBasic`)). Cross-package resolution itself is plugin-agnostic
 (`internal/astutil`, exercised end-to-end in
 `internal/generate/generate_test.go`, and per-plugin in each
 `TestExtract_CrossPackage`) — any future plugin gets it for free by

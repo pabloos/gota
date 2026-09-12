@@ -21,12 +21,12 @@ go test ./...
 ```
 
 `go test ./...` will fetch `github.com/go-chi/chi/v5`,
-`github.com/gin-gonic/gin`, `github.com/labstack/echo/v4`, and
-`github.com/gorilla/mux` on first run (test-only fixture dependencies,
-each isolated in its own nested `go.mod` so none bumps gota's own build
-floor — see the `internal/router/chi`, `internal/router/gin`,
-`internal/router/echo`, and `internal/router/gorilla` package doc
-comments) — the one time this repo needs network access to run its normal
+`github.com/gin-gonic/gin`, `github.com/labstack/echo/v4`,
+`github.com/gofiber/fiber/v2`, and `github.com/gorilla/mux` on first run
+(test-only fixture dependencies, each isolated in its own nested `go.mod`
+so none bumps gota's own build floor — see the `internal/router/chi`,
+`internal/router/gin`, `internal/router/echo`, `internal/router/fiber`,
+and `internal/router/gorilla` package doc comments) — the one time this repo needs network access to run its normal
 test suite.
 
 Try the CLI against the bundled fixture:
@@ -124,20 +124,22 @@ These are real, currently-unaddressed gaps — each documented in the
 [router plugins](internal/router/README.md) and
 [inference](internal/inference/README.md) reference, not secret TODOs:
 
-- **Fiber router plugin + `inference.Dialect`.** `internal/router/nethttp`,
-  `internal/router/chi`, `internal/router/gin`, `internal/router/echo`,
-  and `internal/router/gorilla` are all reference `router.Plugin`
+- **Another framework's router plugin + `inference.Dialect`.**
+  `internal/router/nethttp`, `internal/router/chi`, `internal/router/gin`,
+  `internal/router/echo`, `internal/router/fiber`, and
+  `internal/router/gorilla` are all reference `router.Plugin`
   implementations (`internal/router/plugin.go`) — a new plugin needs the
   same route (method, path, handler) extraction for a different router's
   API. Cross-package handler resolution comes for free: populate
   `Route.HandlerObj` the way they do, and `internal/generate` traces it
   via `internal/astutil` regardless of which plugin found it. Unlike Chi
   and gorilla/mux (plain net/http handlers, reuse `inference.NetHTTP()`
-  unchanged), Fiber — like Gin and Echo — writes responses through a
-  framework context, so it also needs its own `inference.Dialect`
-  (`internal/inference/dialect.go`) — see `dialect_nethttp.go` for the
-  base and `dialect_gin.go` / `dialect_echo.go` for how a real framework
-  dialect embeds it and adds `c.JSON`/`c.Bind`-style recognizers.
+  unchanged), a framework whose handlers write through their own context —
+  like Gin, Echo and Fiber — also needs its own `inference.Dialect`
+  (`internal/inference/dialect.go`) — see `dialect_nethttp.go` for the base
+  and `dialect_gin.go` / `dialect_echo.go` / `dialect_fiber.go` for how a
+  real framework dialect embeds it and adds `c.JSON`/`c.Bind`-style
+  recognizers.
 - **Cross-package `Mount` resolution.** `internal/router/chi` only
   follows `Mount(prefix, ctor())` when `ctor` is declared in the same
   package as the `Mount` call — `Plugin.Extract` only ever sees one

@@ -11,6 +11,7 @@ import (
 	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/chi"
 	"github.com/pabloos/gota/internal/router/echo"
+	"github.com/pabloos/gota/internal/router/fiber"
 	"github.com/pabloos/gota/internal/router/gin"
 	"github.com/pabloos/gota/internal/router/nethttp"
 	"github.com/pabloos/gota/pkg/model"
@@ -956,6 +957,71 @@ func TestRun_EchoBasic(t *testing.T) {
 	}
 	if version.Get.OperationID != "GetVersion" {
 		t.Errorf("operationId = %q, want synthesized \"GetVersion\"", version.Get.OperationID)
+	}
+
+	if doc.Components == nil || doc.Components.Schemas["User"] == nil {
+		t.Errorf("Components = %+v, want a resolved User component", doc.Components)
+	}
+}
+
+// TestRun_FiberBasic drives the whole pipeline through the fiber plugin +
+// dialect against a real fiber API (fixture testdata/fiber-basic): routes
+// registered via a register function on a group, c.BodyParser bodies,
+// c.Status(code).JSON and c.SendStatus responses — all validating.
+func TestRun_FiberBasic(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/fiber-basic")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Fiber API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: fiber.New(), Dialect: inference.Fiber()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+	if err := emitter.Validate(doc); err != nil {
+		t.Fatalf("generated document is not valid OpenAPI: %v", err)
+	}
+
+	// The register function's routes resolve under the group's "/api/v1".
+	get := doc.Paths["/api/v1/users/{id}"]
+	if get == nil || get.Get == nil {
+		t.Fatalf("doc.Paths = %+v, missing GET /api/v1/users/{id}", doc.Paths)
+	}
+	if get.Get.Description != "GetUser returns a user by id." {
+		t.Errorf("description = %q, want the doc-comment prose", get.Get.Description)
+	}
+	if len(get.Get.Parameters) != 1 || get.Get.Parameters[0].Name != "id" {
+		t.Errorf("parameters = %+v, want a single {id} path param", get.Get.Parameters)
+	}
+	if s := get.Get.Responses["200"].Content["application/json"].Schema; s == nil || s.Ref != "#/components/schemas/User" {
+		t.Errorf("200 schema = %+v, want $ref to User", s)
+	}
+
+	post := doc.Paths["/api/v1/users"].Post
+	if post == nil {
+		t.Fatalf("missing POST /api/v1/users")
+	}
+	if post.RequestBody == nil || post.RequestBody.Content["application/json"].Schema.Ref != "#/components/schemas/User" {
+		t.Errorf("requestBody = %+v, want $ref to User from c.BodyParser", post.RequestBody)
+	}
+	if _, ok := post.Responses["201"]; !ok {
+		t.Errorf("responses = %+v, want 201 from c.Status(201).JSON", post.Responses)
+	}
+
+	del := doc.Paths["/api/v1/users/{id}"].Delete
+	if del == nil {
+		t.Fatalf("missing DELETE /api/v1/users/{id}")
+	}
+	if _, ok := del.Responses["200"]; ok {
+		t.Errorf("responses = %+v, want no default 200 (c.SendStatus is 204)", del.Responses)
+	}
+	if _, ok := del.Responses["204"]; !ok {
+		t.Errorf("responses = %+v, want a 204 from c.SendStatus", del.Responses)
 	}
 
 	if doc.Components == nil || doc.Components.Schemas["User"] == nil {

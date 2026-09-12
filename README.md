@@ -92,8 +92,8 @@ That's enough to use gota. The rest of this README is reference.
 
 ## What it handles
 
-- **Five routers**, out of the box and all at once (no flag to pick one):
-  `net/http`, Chi, Gin, Echo, gorilla/mux.
+- **Six routers**, out of the box and all at once (no flag to pick one):
+  `net/http`, Chi, Gin, Echo, Fiber, gorilla/mux.
 - **Request & response schemas** inferred from `encoding/json` usage —
   structs, slices, maps, embedding, generics, `time.Time`, `[]byte` (base64),
   `json.Marshaler` types, and pointer fields as nullable.
@@ -327,7 +327,7 @@ is never mistaken for an operation, and vice versa.
 
 gota's internals are documented next to the code they describe:
 
-- [Router plugins](internal/router/) — how each of the five routers' route
+- [Router plugins](internal/router/) — how each of the six routers' route
   registrations are read, plus the per-router feature matrix.
 - [Schema & body inference](internal/inference/) — how request/response
   schemas, types, generics and nullability are derived from the code.
