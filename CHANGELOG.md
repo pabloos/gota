@@ -6,6 +6,25 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.10.0]
+
+### Added
+
+- **Fiber router support** (`github.com/gofiber/fiber/v2`) — gota's sixth
+  router. A new `internal/router/fiber` plugin recognizes routes on a
+  `*fiber.App` and the `fiber.Router` interface a group is typed as: method
+  verbs (`Get`/`Post`/…), `All`, `Add(method, …)`, groups accumulated by
+  object identity, `:name`/`:name?` → `{name}` (a `*`/`+` wildcard
+  declined), inline handlers, and the register-function idiom (a
+  `func(r fiber.Router)` / `func(app *fiber.App)` parameter resolved to its
+  call-site prefix, direct call and interface-dispatch alike). A paired
+  `inference.Fiber()` dialect handles Fiber's split status/response model —
+  `c.JSON(obj)` at the ambient status, `c.Status(code)` setting it (read off
+  a `c.Status(201).JSON(obj)` chain), `c.SendStatus(code)` as a bodyless
+  response, and `c.BodyParser(&x)` for the request body — embedding the
+  net/http dialect so `json.Marshal`/`Unmarshal` still work. Wired into the
+  CLI. Validated against `create-go-app/fiber-go-template` (0 → 7 routes).
+
 ## [0.9.0]
 
 ### Added
