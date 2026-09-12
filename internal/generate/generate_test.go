@@ -10,6 +10,7 @@ import (
 	"github.com/pabloos/gota/internal/generate"
 	"github.com/pabloos/gota/internal/inference"
 	"github.com/pabloos/gota/internal/router/chi"
+	"github.com/pabloos/gota/internal/router/echo"
 	"github.com/pabloos/gota/internal/router/gin"
 	"github.com/pabloos/gota/internal/router/nethttp"
 	"github.com/pabloos/gota/pkg/model"
@@ -882,5 +883,82 @@ func TestRun_SecurityExamplesAndDocBlock(t *testing.T) {
 		t.Errorf("GET /health Security is nil, want a declared empty (public) requirement")
 	} else if len(*health.Security) != 0 {
 		t.Errorf("GET /health Security = %+v, want empty", *health.Security)
+	}
+}
+
+// TestRun_EchoBasic drives the whole pipeline through the echo plugin +
+// dialect against a real echo API (fixture testdata/echo-basic, its own
+// module): a group prefix, a :id path parameter, c.Bind request bodies,
+// c.JSON at explicit codes, a c.NoContent 204, and an inline func literal —
+// all landing in a document that validates.
+func TestRun_EchoBasic(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/echo-basic")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := generate.Run(generate.Options{
+		Dir:     dir,
+		Title:   "Echo API",
+		Version: "1.0.0",
+		Routers: []generate.Router{{Plugin: echo.New(), Dialect: inference.Echo()}},
+	})
+	if err != nil {
+		t.Fatalf("generate.Run: %v", err)
+	}
+	if err := emitter.Validate(doc); err != nil {
+		t.Fatalf("generated document is not valid OpenAPI: %v", err)
+	}
+
+	// GET /api/v1/users/{id}: group prefix + :id param, prose description.
+	get := doc.Paths["/api/v1/users/{id}"]
+	if get == nil || get.Get == nil {
+		t.Fatalf("doc.Paths = %+v, missing GET /api/v1/users/{id}", doc.Paths)
+	}
+	if get.Get.Description != "GetUser returns a user by id." {
+		t.Errorf("description = %q, want the doc-comment prose", get.Get.Description)
+	}
+	if len(get.Get.Parameters) != 1 || get.Get.Parameters[0].Name != "id" {
+		t.Errorf("parameters = %+v, want a single {id} path param", get.Get.Parameters)
+	}
+	if s := get.Get.Responses["200"].Content["application/json"].Schema; s == nil || s.Ref != "#/components/schemas/User" {
+		t.Errorf("200 schema = %+v, want $ref to User", s)
+	}
+
+	// POST /api/v1/users: c.Bind request body + c.JSON(201).
+	post := doc.Paths["/api/v1/users"].Post
+	if post == nil {
+		t.Fatalf("missing POST /api/v1/users")
+	}
+	if post.RequestBody == nil || post.RequestBody.Content["application/json"].Schema.Ref != "#/components/schemas/User" {
+		t.Errorf("requestBody = %+v, want $ref to User from c.Bind", post.RequestBody)
+	}
+	if _, ok := post.Responses["201"]; !ok {
+		t.Errorf("responses = %+v, want 201 from c.JSON", post.Responses)
+	}
+
+	// DELETE /api/v1/users/{id}: c.NoContent -> a bodyless 204, not 200.
+	del := doc.Paths["/api/v1/users/{id}"].Delete
+	if del == nil {
+		t.Fatalf("missing DELETE /api/v1/users/{id}")
+	}
+	if _, ok := del.Responses["200"]; ok {
+		t.Errorf("responses = %+v, want no default 200 (c.NoContent is a 204)", del.Responses)
+	}
+	if _, ok := del.Responses["204"]; !ok {
+		t.Errorf("responses = %+v, want a 204 from c.NoContent", del.Responses)
+	}
+
+	// The inline func literal still emits a route with a synthesized id.
+	version := doc.Paths["/version"]
+	if version == nil || version.Get == nil {
+		t.Fatalf("missing GET /version (inline handler)")
+	}
+	if version.Get.OperationID != "GetVersion" {
+		t.Errorf("operationId = %q, want synthesized \"GetVersion\"", version.Get.OperationID)
+	}
+
+	if doc.Components == nil || doc.Components.Schemas["User"] == nil {
+		t.Errorf("Components = %+v, want a resolved User component", doc.Components)
 	}
 }

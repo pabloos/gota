@@ -40,18 +40,19 @@ func GetUser(w http.ResponseWriter, r *http.Request) { ... }
 ## Status
 
 `net/http`, [Chi](https://github.com/go-chi/chi),
-[Gin](https://github.com/gin-gonic/gin), and
+[Gin](https://github.com/gin-gonic/gin),
+[Echo](https://github.com/labstack/echo), and
 [gorilla/mux](https://github.com/gorilla/mux) are supported routers —
 every plugin runs unconditionally against every analyzed package (no flag
 needed to pick one; a plugin whose framework isn't present just
 contributes no routes). `net/http`, Chi, and gorilla/mux share the same
 net/http-based body inference, since their handlers are plain
 `func(w http.ResponseWriter, r *http.Request)` with no response-writing
-idiom of their own. Gin, whose handlers write through `*gin.Context`
-(`c.JSON(201, obj)`, `c.ShouldBindJSON(&x)`), brings its own
-`inference.Dialect` that embeds the net/http one — so a Gin handler that
-falls back to `json.NewDecoder(c.Request.Body).Decode(&x)` is still
-understood.
+idiom of their own. Gin (`c.JSON(201, obj)`, `c.ShouldBindJSON(&x)`) and
+Echo (`c.JSON(201, obj)`, `c.Bind(&x)`, `c.NoContent(204)`), whose
+handlers write through a framework context, each bring their own
+`inference.Dialect` that embeds the net/http one — so a handler that falls
+back to `json.NewDecoder(...).Decode(&x)` is still understood.
 
 Gin routes are read off the engine and off `Group` variables, whose
 prefix is accumulated by object identity (`v1 := r.Group("/api/v1")` then
@@ -68,6 +69,32 @@ a `func reg(rg *gin.RouterGroup){...}` register function has no
 locally-recoverable prefix and its routes are declined (the opposite of
 Chi's absolute-path constructors) — as are `*name` catch-alls, reassigned
 group variables, and non-constant methods.
+
+Echo works the same way, off `*echo.Echo` and `*echo.Group` — the one
+structural difference from Gin is that Echo's handler sits at a *fixed*
+argument position (`e.GET(path, handler, mw...)`, the handler right after
+the path) rather than being the variadic last argument. `Any`/`Add`/
+`Match` expand to their concrete methods (`TRACE` included, `CONNECT`
+declined for want of an OpenAPI slot); groups accumulate their prefix by
+object identity, inline and nested; `:name` → `{name}` and a `*` catch-all
+is declined; an inline `func(c echo.Context) error` handler is supported.
+Its dialect adds `c.NoContent(204)` as a bodyless response on top of the
+shared `c.JSON`/`c.Bind` recognizers.
+
+The Echo plugin also resolves the **register-function** layout that most
+real Echo apps use — routes registered inside a function that takes an
+`*echo.Group` parameter, e.g. `func (h *Users) Routes(g *echo.Group) {
+g.GET("/users", …) }`. gota finds where such a function is called and gives
+its group parameter the prefix of the group passed there, matched by call
+name + argument position — so it resolves both a direct call
+(`registerUsers(v1)`) and the interface-dispatch registry loop
+(`for _, h := range hs { h.Routes(g) }`) that frameworks like
+[pagoda](https://github.com/mikestefanello/pagoda) use, with nested groups
+inside the function chaining onto the resolved prefix. A register function
+whose only call site is in another package stays declined — the same
+single-package boundary as chi's `Mount`. (This resolution is Echo-only for
+now; the Gin plugin still declines its `func(rg *gin.RouterGroup)`
+equivalent.)
 
 gorilla/mux routes are read off `r.HandleFunc(path, h)` / `r.Handle(path,
 h)`, with the HTTP methods taken from a `.Methods("GET", …)` chained onto
@@ -356,9 +383,9 @@ or `gota:doc:` block ends at the first blank comment line (or where the
 prose returns to the left margin), so ordinary package/handler
 documentation can sit in the same comment without being parsed as YAML.
 
-Other router plugins — Echo, Fiber — are not implemented yet; like Gin,
-they'd also need their own `inference.Dialect` (see the body inference
-paragraph above), not just a router plugin.
+Other router plugins — Fiber, for one — are not implemented yet; like Gin
+and Echo, one would also need its own `inference.Dialect` (see the body
+inference paragraph above), not just a router plugin.
 
 ## Usage
 
@@ -529,32 +556,34 @@ Core engine — everything router-agnostic:
 | Path parameter & operation ID inference | Turning a `{id}`-style path template into an OpenAPI `parameters` entry, handler-name humanization                                                  | `internal/inference/inference_test.go` |
 | Document assembly & validation    | Path/method assembly, duplicate-route errors, unrepresentable-method errors, YAML/JSON marshaling, structural validation catching bad `gota:` input      | `internal/emitter/emitter_test.go` |
 | CLI                                | Flag defaults, `--dir` resolution to an absolute path, title override, format detection from `--out`'s extension                                        | `cmd/gota/main_test.go` |
-| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal; `security-examples` fixture proving a `gota:doc:` block (securitySchemes, global security, servers, tags, info description, `externalDocs`, and a `webhooks` section whose operation `$ref`s a component and is validated like a path), a per-operation `security`, and response `examples` all land in a document that validates; an unrecognized `gota:doc:` key warns on stderr instead of vanishing | `internal/generate/generate_test.go` |
+| End-to-end pipeline                | Full `nethttp-basic` fixture through generate → emit → marshal, round-tripped; `chi-basic` fixture (a separate Go module, see below) proving the same pipeline on Chi's nested `Route`/`Mount`; `nethttp-generics` fixture proving two generic instantiations resolve distinctly; `nethttp-operationid-collision` fixture proving a method-less pattern's 8 expanded operations get distinct operationIds instead of failing validation; `gin-inline` fixture proving an inline `func` literal handler still emits a route with a method+path-synthesized operationId and a body inferred from the literal; `echo-basic` fixture proving the full pipeline over the Echo plugin + dialect (group prefix, `:id` param, `c.Bind`, `c.JSON`, a `c.NoContent` 204, an inline handler) validates end-to-end; `security-examples` fixture proving a `gota:doc:` block (securitySchemes, global security, servers, tags, info description, `externalDocs`, and a `webhooks` section whose operation `$ref`s a component and is validated like a path), a per-operation `security`, and response `examples` all land in a document that validates; an unrecognized `gota:doc:` key warns on stderr instead of vanishing | `internal/generate/generate_test.go` |
 
 Router plugins — everything specific to reading routes out of a given
 router's API:
 
-| Feature                                    | `net/http` | Chi | Gin | gorilla/mux |
-|----------------------------------------------|:----------:|:---:|:---:|:---:|
-| Route extraction (method + path, incl. path params) | ✅ | ✅ | ✅ (`:name` → `{name}`) | ✅ (`{name:re}` → `{name}`) |
-| Method-less / multi-method pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) | ✅ (`Any`; `Match([]string{…})` per constant method) | ✅ (no `.Methods()`; `.Methods("GET","POST")` per constant) |
-| Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) | ✅ |
-| Handler resolution: method value (bound method) | ✅ | ✅ | ✅ | ✅ |
-| Handler resolution: cross-package reference    | ✅ | ✅ | ✅ | ✅ |
-| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ✅ (explicit-method pattern only; a method-less inline closure is declined as dispatcher-ambiguous) | ✅ | ✅ | ✅ |
-| Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
-| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a |
-| Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
-| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
+| Feature                                    | `net/http` | Chi | Gin | Echo | gorilla/mux |
+|----------------------------------------------|:----------:|:---:|:---:|:---:|:---:|
+| Route extraction (method + path, incl. path params) | ✅ | ✅ | ✅ (`:name` → `{name}`) | ✅ (`:name` → `{name}`) | ✅ (`{name:re}` → `{name}`) |
+| Method-less / multi-method pattern → expands to every HTTP method | ✅ | ✅ (`Handle`/`HandleFunc`, no space in the pattern) | ✅ (`Any`; `Match([]string{…})` per constant method) | ✅ (`Any`; `Add(const)`; `Match([]string{…})` per constant method) | ✅ (no `.Methods()`; `.Methods("GET","POST")` per constant) |
+| Handler resolution: bare identifier            | ✅ | ✅ | ✅ (last variadic arg; earlier args are middleware) | ✅ (fixed arg after the path; later args are middleware) | ✅ |
+| Handler resolution: method value (bound method) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Handler resolution: cross-package reference    | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Handler resolution: inline `func` literal (operationId synthesized from method+path) | ✅ (explicit-method pattern only; a method-less inline closure is declined as dispatcher-ambiguous) | ✅ | ✅ | ✅ | ✅ |
+| Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | single-arg wrapper | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
+| Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a | n/a |
+| Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
+| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | declined: group functions use relative paths, no recoverable prefix | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
 `internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`,
+`internal/router/echo/echo_test.go`,
 `internal/router/gorilla/gorilla_test.go` (each framework fixture at
 `internal/router/<name>/testdata/routes`, its own Go module — chi, gin,
-and gorilla/mux are test-only dependencies, isolated so they never bump
-gota's own `go.mod` floor; same reasoning for `testdata/chi-basic`, used
-by `TestRun_ChiBasic`). Cross-package resolution itself is
-plugin-agnostic (`internal/astutil`, exercised end-to-end in
+echo, and gorilla/mux are test-only dependencies, isolated so they never
+bump gota's own `go.mod` floor; same reasoning for `testdata/chi-basic`,
+used by `TestRun_ChiBasic`, and `testdata/echo-basic`, used by
+`TestRun_EchoBasic`). Cross-package resolution itself is plugin-agnostic
+(`internal/astutil`, exercised end-to-end in
 `internal/generate/generate_test.go`, and per-plugin in each
 `TestExtract_CrossPackage`) — any future plugin gets it for free by
 populating `Route.HandlerObj` the same way.
@@ -572,8 +601,8 @@ git config core.hooksPath .githooks
 ## Contributing
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
-dev setup and a list of concrete, well-scoped starting points (an Echo
-or Fiber router plugin + dialect, cross-package `Mount` resolution).
+dev setup and a list of concrete, well-scoped starting points (a Fiber
+router plugin + dialect, cross-package `Mount` resolution).
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

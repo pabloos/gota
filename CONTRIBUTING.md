@@ -21,10 +21,11 @@ go test ./...
 ```
 
 `go test ./...` will fetch `github.com/go-chi/chi/v5`,
-`github.com/gin-gonic/gin`, and `github.com/gorilla/mux` on first run
-(test-only fixture dependencies, each isolated in its own nested `go.mod`
-so none bumps gota's own build floor — see the `internal/router/chi`,
-`internal/router/gin`, and `internal/router/gorilla` package doc
+`github.com/gin-gonic/gin`, `github.com/labstack/echo/v4`, and
+`github.com/gorilla/mux` on first run (test-only fixture dependencies,
+each isolated in its own nested `go.mod` so none bumps gota's own build
+floor — see the `internal/router/chi`, `internal/router/gin`,
+`internal/router/echo`, and `internal/router/gorilla` package doc
 comments) — the one time this repo needs network access to run its normal
 test suite.
 
@@ -122,20 +123,20 @@ matching them keeps a PR reviewable as a diff rather than a rewrite:
 These are real, currently-unaddressed gaps — each documented in the
 README's [Status](README.md#status) section, not secret TODOs:
 
-- **Echo or Fiber router plugin + `inference.Dialect`.** `internal/router/nethttp`,
-  `internal/router/chi`, `internal/router/gin`, and
-  `internal/router/gorilla` are all reference `router.Plugin`
+- **Fiber router plugin + `inference.Dialect`.** `internal/router/nethttp`,
+  `internal/router/chi`, `internal/router/gin`, `internal/router/echo`,
+  and `internal/router/gorilla` are all reference `router.Plugin`
   implementations (`internal/router/plugin.go`) — a new plugin needs the
   same route (method, path, handler) extraction for a different router's
   API. Cross-package handler resolution comes for free: populate
   `Route.HandlerObj` the way they do, and `internal/generate` traces it
   via `internal/astutil` regardless of which plugin found it. Unlike Chi
   and gorilla/mux (plain net/http handlers, reuse `inference.NetHTTP()`
-  unchanged), Echo/Fiber — like Gin — write responses through a framework
-  context, so they also need their own `inference.Dialect`
+  unchanged), Fiber — like Gin and Echo — writes responses through a
+  framework context, so it also needs its own `inference.Dialect`
   (`internal/inference/dialect.go`) — see `dialect_nethttp.go` for the
-  base and `dialect_gin.go` for how a real framework dialect embeds it
-  and adds `c.JSON`/`c.Bind`-style recognizers.
+  base and `dialect_gin.go` / `dialect_echo.go` for how a real framework
+  dialect embeds it and adds `c.JSON`/`c.Bind`-style recognizers.
 - **Cross-package `Mount` resolution.** `internal/router/chi` only
   follows `Mount(prefix, ctor())` when `ctor` is declared in the same
   package as the `Mount` call — `Plugin.Extract` only ever sees one
