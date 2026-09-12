@@ -121,8 +121,8 @@ matching them keeps a PR reviewable as a diff rather than a rewrite:
 ## Good first issues
 
 These are real, currently-unaddressed gaps — each documented in the
-README's [Supported routers & inference](README.md#supported-routers--inference)
-section, not secret TODOs:
+[router plugins](internal/router/README.md) and
+[inference](internal/inference/README.md) reference, not secret TODOs:
 
 - **Fiber router plugin + `inference.Dialect`.** `internal/router/nethttp`,
   `internal/router/chi`, `internal/router/gin`, `internal/router/echo`,
