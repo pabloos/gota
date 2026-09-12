@@ -37,7 +37,190 @@ Declared (comment) fields always win; inferred fields fill in the rest.
 func GetUser(w http.ResponseWriter, r *http.Request) { ... }
 ```
 
-## Status
+gota is pre-1.0 — its inference surface is still growing (see the
+[CHANGELOG](CHANGELOG.md)) — but every run emits a document that is validated
+as OpenAPI 3.1 before it's written, so the output is always well-formed.
+
+## Install
+
+```sh
+go install github.com/pabloos/gota/cmd/gota@latest
+```
+
+Or run it without installing, and without adding gota to your `go.mod`:
+
+```sh
+go run github.com/pabloos/gota/cmd/gota@latest --dir . --out openapi.yaml
+```
+
+Building gota needs Go 1.23+. To analyze a project that itself requires a
+newer Go version, build gota with a current toolchain — see
+[CONTRIBUTING](CONTRIBUTING.md).
+
+## Quickstart
+
+Point gota at a Go project and it writes an OpenAPI 3.1 document:
+
+```sh
+gota --dir ./path/to/project --out openapi.yaml
+```
+
+Routes, path parameters, request/response schemas, and the doc comment above
+each handler are read straight from the code — no annotations required. For
+anything the code can't express — a response description, an example,
+authentication — add a `gota:` comment above the handler, written in plain
+OpenAPI:
+
+```go
+// ListUsers returns every registered user.
+//
+// gota:
+//   responses:
+//     '200':
+//       description: All users.
+func ListUsers(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(users)
+}
+```
+
+Declared fields win; inferred ones fill in the rest — here the operation
+description comes from the doc comment, and the `200` response keeps the
+schema gota infers from the `Encode` call while taking the declared
+`description`.
+
+That's enough to use gota. The rest of this README is reference.
+
+## What it handles
+
+- **Five routers**, out of the box and all at once (no flag to pick one):
+  `net/http`, Chi, Gin, Echo, gorilla/mux.
+- **Request & response schemas** inferred from `encoding/json` usage —
+  structs, slices, maps, embedding, generics, `time.Time`, `[]byte` (base64),
+  `json.Marshaler` types, and pointer fields as nullable.
+- **Routes, path params, methods and operationIds** from the registrations;
+  each handler's doc comment becomes the operation description.
+- **`gota:` comments** for per-operation OpenAPI the code can't express —
+  descriptions, examples, authentication — written in plain OpenAPI.
+- **`gota:doc:` blocks** for document-level OpenAPI — `securitySchemes`,
+  `servers`, `tags`, `webhooks`, `externalDocs`.
+- **Validated OpenAPI 3.1** on every run.
+
+For exactly how each router and inference rule behaves, see
+[Supported routers & inference](#supported-routers--inference) — or jump to
+[Usage](#usage), [CI](#using-gota-in-ci), or
+[Contributing](#contributing).
+
+## Usage
+
+```sh
+gota --dir ./path/to/project --out openapi.yaml
+```
+
+Flags:
+
+| Flag            | Default        | Description                          |
+|-----------------|----------------|---------------------------------------|
+| `--dir`         | `.`            | Directory of the Go project to analyze |
+| `--out`         | `openapi.yaml` | Output file (`.yaml`/`.yml` or `.json`) |
+| `--title`       | directory name | API title                             |
+| `--api-version` | `0.1.0`        | API version                           |
+
+Try it against the bundled fixture:
+
+```sh
+go run ./cmd/gota --dir testdata/nethttp-basic --out /tmp/openapi.yaml
+```
+
+## Using gota in CI
+
+Since the spec is derived from the code, the natural place to enforce
+"the committed spec actually matches the code" is CI — regenerate it and
+fail the build if that produces a diff, the same drift check you'd use
+for any other generated file:
+
+```yaml
+name: openapi
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: generate openapi.yaml
+        run: go run github.com/pabloos/gota/cmd/gota@latest --dir . --out openapi.yaml
+
+      - name: fail if the committed spec is stale
+        run: git diff --exit-code openapi.yaml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: openapi.yaml
+```
+
+`go run ./cmd/gota` exits non-zero on anything that would make the spec
+wrong or incomplete — an ambiguous `$ref` (two packages declaring the
+same schema name), an HTTP method OpenAPI has no operation slot for, or
+a structural validation failure (`emitter.Validate`) — so this job also
+doubles as a correctness gate, not just a formatting one.
+
+A fresh, validated `openapi.yaml` artifact in CI is a natural input for
+whatever comes after doc generation: publish it as a build artifact (as
+above) for downstream jobs or other repos to consume, diff it against a
+previous release to catch breaking API changes before they ship, or feed
+it straight into a client generator — see below.
+
+### Example: generating a Go client with oapi-codegen
+
+[oapi-codegen](https://github.com/oapi-codegen/oapi-codegen) reads the
+spec gota writes and generates a typed Go client from it — a natural
+next step once the spec exists, and something gota deliberately doesn't
+do itself. Note that `oapi-codegen` itself needs a Go 1.25+ toolchain to
+build — independent of whatever version your own project targets;
+`go generate`/`go run` will fetch that automatically as long as CI has
+network access.
+
+`client/cfg.yaml`:
+
+```yaml
+package: client
+output: client.gen.go
+generate:
+  models: true
+  client: true
+```
+
+`client/generate.go`:
+
+```go
+package client
+
+//go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen -config cfg.yaml ../openapi.yaml
+```
+
+Then, right after gota regenerates `openapi.yaml` in the CI job above:
+
+```yaml
+      - name: generate Go client from the spec
+        run: go generate ./client/...
+```
+
+`client.gen.go` can be committed like any other generated file (with its
+own drift check, the same pattern as `openapi.yaml` above) or uploaded as
+a build artifact, depending on how your project already handles generated
+code.
+
+## Supported routers & inference
 
 `net/http`, [Chi](https://github.com/go-chi/chi),
 [Gin](https://github.com/gin-gonic/gin),
@@ -110,7 +293,7 @@ adds no segment but inherits the parent's prefix. A `{id:[0-9]+}`
 constraint (and a `{rest:.*}` catch-all) degrades to the bare `{id}` /
 `{rest}` — including a regex that itself contains braces, such as a
 quantifier `{id:[a-z]{3}}` or a full anchored pattern
-`{id:^sig_([a-zA-Z0-9]{22})$}`, whose closing brace is found by balancing,
+`{code:^[A-Z]{2}[0-9]{4}$}`, whose closing brace is found by balancing,
 not by stopping at the first `}`. The handler passed to `Handle`/`HandleFunc` is commonly the real
 handler wrapped in middleware — `r.Handle("/x",
 handlers.LoggingHandler(os.Stdout, H))`, `cors(opts)(H)`,
@@ -315,21 +498,21 @@ package comment is the natural home):
 ```go
 // gota:doc:
 //   info:
-//     description: A signatures API secured with a bearer token.
+//     description: An orders API secured with a bearer token.
 //   security:
 //     - BearerAuth: []
 //   externalDocs:
 //     description: Guides and tutorials
 //     url: https://docs.example.com
 //   webhooks:
-//     signatureCertified:
+//     orderShipped:
 //       post:
-//         summary: Signature certified
+//         summary: Order shipped
 //         requestBody:
 //           content:
 //             application/json:
 //               schema:
-//                 $ref: '#/components/schemas/Signature'
+//                 $ref: '#/components/schemas/Order'
 //         responses:
 //           '200':
 //             description: Acknowledged.
@@ -388,116 +571,6 @@ documentation can sit in the same comment without being parsed as YAML.
 Other router plugins — Fiber, for one — are not implemented yet; like Gin
 and Echo, one would also need its own `inference.Dialect` (see the body
 inference paragraph above), not just a router plugin.
-
-## Usage
-
-```sh
-go run ./cmd/gota --dir ./path/to/project --out openapi.yaml
-```
-
-Flags:
-
-| Flag            | Default        | Description                          |
-|-----------------|----------------|---------------------------------------|
-| `--dir`         | `.`            | Directory of the Go project to analyze |
-| `--out`         | `openapi.yaml` | Output file (`.yaml`/`.yml` or `.json`) |
-| `--title`       | directory name | API title                             |
-| `--api-version` | `0.1.0`        | API version                           |
-
-Try it against the bundled fixture:
-
-```sh
-go run ./cmd/gota --dir testdata/nethttp-basic --out /tmp/openapi.yaml
-```
-
-## Using gota in CI
-
-Since the spec is derived from the code, the natural place to enforce
-"the committed spec actually matches the code" is CI — regenerate it and
-fail the build if that produces a diff, the same drift check you'd use
-for any other generated file:
-
-```yaml
-name: openapi
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  spec:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: generate openapi.yaml
-        run: go run github.com/pabloos/gota/cmd/gota@latest --dir . --out openapi.yaml
-
-      - name: fail if the committed spec is stale
-        run: git diff --exit-code openapi.yaml
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: openapi
-          path: openapi.yaml
-```
-
-`go run ./cmd/gota` exits non-zero on anything that would make the spec
-wrong or incomplete — an ambiguous `$ref` (two packages declaring the
-same schema name), an HTTP method OpenAPI has no operation slot for, or
-a structural validation failure (`emitter.Validate`) — so this job also
-doubles as a correctness gate, not just a formatting one.
-
-A fresh, validated `openapi.yaml` artifact in CI is a natural input for
-whatever comes after doc generation: publish it as a build artifact (as
-above) for downstream jobs or other repos to consume, diff it against a
-previous release to catch breaking API changes before they ship, or feed
-it straight into a client generator — see below.
-
-### Example: generating a Go client with oapi-codegen
-
-[oapi-codegen](https://github.com/oapi-codegen/oapi-codegen) reads the
-spec gota writes and generates a typed Go client from it — a natural
-next step once the spec exists, and something gota deliberately doesn't
-do itself. Note that `oapi-codegen` itself needs a Go 1.25+ toolchain to
-build — independent of whatever version your own project targets;
-`go generate`/`go run` will fetch that automatically as long as CI has
-network access.
-
-`client/cfg.yaml`:
-
-```yaml
-package: client
-output: client.gen.go
-generate:
-  models: true
-  client: true
-```
-
-`client/generate.go`:
-
-```go
-package client
-
-//go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen -config cfg.yaml ../openapi.yaml
-```
-
-Then, right after gota regenerates `openapi.yaml` in the CI job above:
-
-```yaml
-      - name: generate Go client from the spec
-        run: go generate ./client/...
-```
-
-`client.gen.go` can be committed like any other generated file (with its
-own drift check, the same pattern as `openapi.yaml` above) or uploaded as
-a build artifact, depending on how your project already handles generated
-code.
 
 ## Pipeline
 
