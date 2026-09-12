@@ -6,6 +6,24 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.9.0]
+
+### Added
+
+- **Gin register-function resolution**, bringing the Gin plugin to parity
+  with Echo (v0.8.0). Routes registered inside a function that takes a
+  `*gin.RouterGroup` parameter (`func (h *Users) Routes(rg *gin.RouterGroup)
+  { rg.GET("/tags", …) }`) are now resolved to the prefix of the group
+  passed at the call site — matched by call name + argument position, so it
+  covers both a direct call and the interface-dispatch registry loop
+  (`for _, h := range hs { h.Routes(g) }`); nested groups inside chain onto
+  the resolved prefix. `groupPrefix` became `groupPrefixes` (a register
+  function called with several groups emits under each), resolved to a
+  fixpoint. Previously such routes were declined. A register function whose
+  only call site is in another package still declines (the single-package
+  boundary chi's `Mount` has). The Gin plugin's overall extraction was also
+  spot-checked against `gotify/server` (30 routes).
+
 ## [0.8.0]
 
 ### Added
