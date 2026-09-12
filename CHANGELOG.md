@@ -6,6 +6,35 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.8.0]
+
+### Added
+
+- **Echo router support** (`github.com/labstack/echo/v4`). A new
+  `internal/router/echo` plugin recognizes routes on an `*echo.Echo` and
+  `*echo.Group` — method verbs (TRACE included, CONNECT declined),
+  `Any`/`Add`/`Match`, group prefixes accumulated by object identity
+  (nested and inline-chained), `:name` → `{name}` (a `*` catch-all
+  declined), and inline `func(c echo.Context) error` handlers. Echo's
+  handler sits at a fixed argument position (`e.GET(path, handler,
+  mw...)`), unlike Gin's variadic-last handler. A paired
+  `inference.Echo()` dialect recognizes `c.JSON`/`c.JSONPretty` responses,
+  `c.NoContent` as a bodyless response, and `c.Bind` request bodies,
+  embedding the net/http dialect so `json.Decode`/`Encode` on
+  `c.Request()` still work. Wired into the CLI, so it runs unconditionally
+  like the other plugins.
+- **Echo register-function resolution** — the layout most real Echo apps
+  use. Routes registered inside a function that takes an `*echo.Group`
+  parameter (`func (h *Users) Routes(g *echo.Group) { g.GET("/users", …) }`)
+  are resolved by finding where the function is called and taking the prefix
+  of the group passed there, matched by call name + argument position. This
+  covers both a direct call and the interface-dispatch registry loop
+  (`for _, h := range hs { h.Routes(g) }`); nested groups inside chain onto
+  the resolved prefix. Validated against `mikestefanello/pagoda` (0 → 19
+  routes). A register function whose only call site is in another package
+  stays declined (the single-package boundary chi's `Mount` also has). Gin's
+  equivalent still declines, for now.
+
 ## [0.7.0]
 
 ### Added
