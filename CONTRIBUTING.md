@@ -140,13 +140,17 @@ These are real, currently-unaddressed gaps — each documented in the
   and `dialect_gin.go` / `dialect_echo.go` / `dialect_fiber.go` for how a
   real framework dialect embeds it and adds `c.JSON`/`c.Bind`-style
   recognizers.
-- **Cross-package `Mount` resolution.** `internal/router/chi` only
-  follows `Mount(prefix, ctor())` when `ctor` is declared in the same
-  package as the `Mount` call — `Plugin.Extract` only ever sees one
-  package at a time, so a constructor split into a different package
-  (the common way large real Chi APIs are structured) isn't resolved.
-  Would need `Extract`'s single-package scope to somehow reach another
-  package's declaration, or a design change to how plugins are invoked.
+- **Cross-package chi `Mount` resolution.** `Plugin.Extract` now receives
+  all analyzed packages (`Extract(pkg, all)`), and the gin/echo/fiber
+  register-function resolution already uses that to resolve a call site in
+  another package (see each plugin's `collectParamPrefixes`). chi's `Mount`
+  still follows only a *same-package* constructor: a `Mount(prefix,
+  otherpkg.Router())` where the constructor lives elsewhere (the common way
+  large real Chi APIs are structured) isn't resolved yet, and its routes
+  would need both the mount prefix from the `Mount` site and exclusion of
+  the constructor's standalone (bare-path) emission when its own package is
+  analyzed. The register-function plugins are the reference for using
+  `all`.
 
 Opening an issue to discuss approach before a large PR is welcome but not
 required for small, well-contained changes.

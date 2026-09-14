@@ -35,21 +35,22 @@
 // parameter — the dominant real-world layout, e.g.
 // "func (h *Users) Routes(g *echo.Group) { g.GET("/users", ...) }" — are
 // resolved too: collectParamPrefixes finds the call sites of such functions
-// in the package and gives the parameter the prefix of the group passed
-// there. Matching is by (call name, argument index), so it reaches both a
-// direct call ("registerUsers(v1)") and an interface dispatch (a
-// "for _, h := range hs { h.Routes(g) }" registry loop, where every
-// concrete Routes(*echo.Group) is resolved under g's prefix). Nested groups
-// created inside the register function chain onto that prefix.
+// across ALL analyzed packages — a call site may live in a different package
+// than the register function (the common handlers-package-registered-from-
+// main split) — and gives the parameter the prefix of the group passed
+// there. A call resolving to one concrete function/method binds its
+// arguments precisely (a direct "registerUsers(v1)", a qualified
+// "handlers.Register(v1)", or a concrete method value); an interface
+// dispatch (a "for _, h := range hs { h.Routes(g) }" registry loop) matches
+// by (name, argument index), so every concrete Routes(*echo.Group) resolves
+// under g's prefix. Nested groups created inside the register function chain
+// onto that prefix. Interface dispatch, matched by name rather than resolved
+// object, is a heuristic across packages, not a precise binding.
 //
-// Known, deliberate residual gaps (declined, not guessed):
-//
-//   - A register function whose only call site is in ANOTHER package: a
-//     single-package Extract can't see the prefix, so its routes stay
-//     declined (the same cross-package boundary as chi's Mount).
-//   - A group variable assigned more than once (ambiguous prefix), a
-//     non-constant Group path, a group whose receiver chain can't be
-//     resolved to a constant prefix, and a "*" catch-all path.
+// Known, deliberate residual gaps (declined, not guessed): a group variable
+// assigned more than once (ambiguous prefix), a non-constant Group path, a
+// group whose receiver chain can't be resolved to a constant prefix, and a
+// "*" catch-all path.
 package echo
 
 import (
@@ -121,14 +122,14 @@ func isRouteMethodName(name string) bool {
 	return name == "Any" || name == "Add" || name == "Match"
 }
 
-func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
+func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]router.Route, error) {
 	if pkg.Fset == nil {
 		return nil, fmt.Errorf("echo: package %s has no Fset", pkg.PkgPath)
 	}
 
 	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
 	groupDefs := collectGroupDefs(pkg)
-	paramPrefixes := collectParamPrefixes(pkg, groupDefs)
+	paramPrefixes := collectParamPrefixes(pkg, all)
 
 	var routes []router.Route
 	for _, file := range pkg.Syntax {
@@ -278,8 +279,11 @@ type registerParam struct {
 // call site is in another package stays declined (the documented
 // cross-package gap). Resolution iterates to a fixpoint so a register
 // function that passes its own group parameter to another one resolves too.
-func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]groupDef) map[types.Object][]string {
-	// Index group-parameter register functions by (name, arg index).
+func collectParamPrefixes(pkg *packages.Package, all []*packages.Package) map[types.Object][]string {
+	// The owner's group-parameter register functions: the set of their group
+	// params (for object binding) and a (name, arg index) index (for the
+	// interface-dispatch fallback).
+	ownerParams := map[types.Object]bool{}
 	byNameIdx := map[registerParam][]types.Object{}
 	for _, file := range pkg.Syntax {
 		for _, d := range file.Decls {
@@ -298,6 +302,7 @@ func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]grou
 				for _, nm := range names {
 					if isGroup {
 						if obj := pkg.TypesInfo.Defs[nm]; obj != nil {
+							ownerParams[obj] = true
 							key := registerParam{fn.Name.Name, idx}
 							byNameIdx[key] = append(byNameIdx[key], obj)
 						}
@@ -307,47 +312,94 @@ func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]grou
 			}
 		}
 	}
-	if len(byNameIdx) == 0 {
+	if len(ownerParams) == 0 {
 		return nil
 	}
 
+	// Precompute each scanned package's group definitions so a call-site
+	// argument is resolved in its own package's context.
+	gdByPkg := make(map[*packages.Package]map[types.Object]groupDef, len(all))
+	for _, p := range all {
+		gdByPkg[p] = collectGroupDefs(p)
+	}
+
 	prefixes := map[types.Object][]string{}
+	add := func(p *packages.Package, gd map[types.Object]groupDef, param types.Object, arg ast.Expr, changed *bool) {
+		if !ownerParams[param] {
+			return
+		}
+		argType := p.TypesInfo.TypeOf(arg)
+		if !isEchoNamedType(argType, "Group") && !isEchoNamedType(argType, "Echo") {
+			return
+		}
+		if aps, ok := groupPrefixes(p, arg, gd, prefixes, map[types.Object]bool{}); ok && addPrefixes(prefixes, param, aps) {
+			*changed = true
+		}
+	}
 	for changed := true; changed; {
 		changed = false
-		for _, file := range pkg.Syntax {
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				name, ok := calleeName(call.Fun)
-				if !ok {
-					return true
-				}
-				for i, arg := range call.Args {
-					objs, ok := byNameIdx[registerParam{name, i}]
+		for _, p := range all {
+			gd := gdByPkg[p]
+			for _, file := range p.Syntax {
+				ast.Inspect(file, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
 					if !ok {
-						continue
+						return true
 					}
-					argType := pkg.TypesInfo.TypeOf(arg)
-					if !isEchoNamedType(argType, "Group") && !isEchoNamedType(argType, "Echo") {
-						continue
+					if fn, ok := bindCallee(p, call); ok {
+						if sig, ok := fn.Type().(*types.Signature); ok && sig.Params() != nil {
+							for i := 0; i < sig.Params().Len() && i < len(call.Args); i++ {
+								add(p, gd, sig.Params().At(i), call.Args[i], &changed)
+							}
+						}
+						return true
 					}
-					argPrefixes, ok := groupPrefixes(pkg, arg, groupDefs, prefixes, map[types.Object]bool{})
+					name, ok := calleeName(call.Fun)
 					if !ok {
-						continue
+						return true
 					}
-					for _, obj := range objs {
-						if addPrefixes(prefixes, obj, argPrefixes) {
-							changed = true
+					for i, arg := range call.Args {
+						for _, obj := range byNameIdx[registerParam{name, i}] {
+							add(p, gd, obj, arg, &changed)
 						}
 					}
-				}
-				return true
-			})
+					return true
+				})
+			}
 		}
 	}
 	return prefixes
+}
+
+// bindCallee returns the single concrete function or method a call invokes,
+// or ok=false for an interface method call (dispatch, no one concrete
+// callee — the caller then falls back to name+index matching). It resolves a
+// bare function, a package-qualified function, and a concrete method value,
+// across packages.
+func bindCallee(callPkg *packages.Package, call *ast.CallExpr) (*types.Func, bool) {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		if fn, ok := callPkg.TypesInfo.Uses[fun].(*types.Func); ok {
+			return fn, true
+		}
+	case *ast.SelectorExpr:
+		if seln, ok := callPkg.TypesInfo.Selections[fun]; ok {
+			fn, ok := seln.Obj().(*types.Func)
+			if !ok {
+				return nil, false
+			}
+			if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+				if _, iface := sig.Recv().Type().Underlying().(*types.Interface); iface {
+					return nil, false
+				}
+			}
+			return fn, true
+		}
+		if fn, ok := callPkg.TypesInfo.Uses[fun.Sel].(*types.Func); ok {
+			return fn, true
+		}
+	}
+	return nil, false
 }
 
 // calleeName returns the bare name a call expression invokes — the

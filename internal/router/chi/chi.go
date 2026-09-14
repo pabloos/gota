@@ -152,7 +152,7 @@ var httpMethods = map[string]bool{
 
 func isHTTPMethod(s string) bool { return httpMethods[s] }
 
-func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
+func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]router.Route, error) {
 	if pkg.Fset == nil {
 		return nil, fmt.Errorf("chi: package %s has no Fset", pkg.PkgPath)
 	}

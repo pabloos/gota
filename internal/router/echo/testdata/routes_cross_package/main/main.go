@@ -14,5 +14,6 @@ func main() {
 	e.GET("/users/:id", handlers.GetUser)
 	v1 := e.Group("/api/v1")
 	v1.POST("/users", handlers.CreateUser)
+	handlers.RegisterAdmin(e.Group("/admin"))
 	e.Logger.Fatal(e.Start(":8080"))
 }

@@ -45,7 +45,7 @@ func TestExtract(t *testing.T) {
 	}
 
 	plugin := chi.New()
-	routes, err := plugin.Extract(pkgs[0])
+	routes, err := plugin.Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestExtract_CrossPackage(t *testing.T) {
 		t.Fatalf("fixture setup: no package named main among: %+v", pkgs)
 	}
 
-	routes, err := chi.New().Extract(mainPkg)
+	routes, err := chi.New().Extract(mainPkg, pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}

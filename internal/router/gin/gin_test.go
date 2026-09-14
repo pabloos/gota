@@ -39,7 +39,7 @@ func TestExtract(t *testing.T) {
 		t.Fatalf("expected 1 package, got %d", len(pkgs))
 	}
 
-	routes, err := gin.New().Extract(pkgs[0])
+	routes, err := gin.New().Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -200,49 +200,60 @@ func TestExtract(t *testing.T) {
 	})
 }
 
-// TestExtract_CrossPackage pins that a handler declared in a different
-// package than the one being analyzed still resolves HandlerObj (with
-// HandlerDecl/File nil, since Extract sees one package) so
-// internal/generate can backfill the declaration — on both an engine
-// route and a group route.
+// TestExtract_CrossPackage pins two cross-package behaviors, extracting
+// every package the way generate does: a handler declared in a different
+// package than the one registering it resolves HandlerObj (with
+// HandlerDecl/File nil for the registering package, backfilled later by
+// generate); and a register function declared in the handlers package,
+// given its group prefix from main, resolves to that prefix.
 func TestExtract_CrossPackage(t *testing.T) {
 	pkgs := loadFixture(t, "routes_cross_package")
 
-	var mainPkg *packages.Package
+	got := map[string]router.Route{}
 	for _, pkg := range pkgs {
-		if pkg.Name == "main" {
-			mainPkg = pkg
+		routes, err := gin.New().Extract(pkg, pkgs)
+		if err != nil {
+			t.Fatalf("Extract(%s): %v", pkg.Name, err)
+		}
+		for _, r := range routes {
+			got[r.Method+" "+r.Path] = r
 		}
 	}
-	if mainPkg == nil {
-		t.Fatalf("fixture setup: no package named main among %+v", pkgs)
-	}
 
-	routes, err := gin.New().Extract(mainPkg)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	got := map[string]router.Route{}
-	for _, r := range routes {
-		got[r.Method+" "+r.Path] = r
-	}
-
+	// Cross-package handlers registered from main.
 	for key, handler := range map[string]string{
 		"GET /users/{id}":    "GetUser",
 		"POST /api/v1/users": "CreateUser",
 	} {
 		r, ok := got[key]
 		if !ok {
-			t.Fatalf("routes = %+v, missing %q", got, key)
+			t.Fatalf("routes = %+v, missing %q", keys(got), key)
 		}
 		if r.HandlerName != handler {
 			t.Errorf("route %q: HandlerName = %q, want %q", key, r.HandlerName, handler)
-		}
-		if r.HandlerDecl != nil || r.File != nil {
-			t.Errorf("route %q: HandlerDecl/File should be nil (cross-package)", key)
 		}
 		if r.HandlerObj == nil {
 			t.Errorf("route %q: HandlerObj is nil, want the resolved cross-package object", key)
 		}
 	}
+
+	// A register function in the handlers package, called as
+	// handlers.RegisterAdmin(r.Group("/admin")) from main: its "/stats"
+	// resolves under the "/admin" prefix from the cross-package call site.
+	admin, ok := got["GET /admin/stats"]
+	if !ok {
+		t.Fatalf("routes = %+v, want GET /admin/stats (cross-package register function)", keys(got))
+	}
+	if admin.HandlerName != "AdminStats" {
+		t.Errorf("GET /admin/stats: HandlerName = %q, want AdminStats", admin.HandlerName)
+	}
+}
+
+// keys returns the route keys of got, for readable failure messages.
+func keys(got map[string]router.Route) []string {
+	out := make([]string, 0, len(got))
+	for k := range got {
+		out = append(out, k)
+	}
+	return out
 }

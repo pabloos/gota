@@ -14,5 +14,10 @@ func main() {
 	r.GET("/users/:id", handlers.GetUser)
 	v1 := r.Group("/api/v1")
 	v1.POST("/users", handlers.CreateUser)
+
+	// A register function declared in the handlers package, given its prefix
+	// here — the cross-package register-function case.
+	handlers.RegisterAdmin(r.Group("/admin"))
+
 	r.Run(":8080")
 }

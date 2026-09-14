@@ -26,15 +26,15 @@
 // The prefix of a route travels through the group VARIABLE it's registered
 // on (object identity). Routes registered inside a register function taking
 // a fiber.Router parameter are resolved to the prefix of the group passed at
-// the call site — direct call and interface-dispatch registry loop alike,
-// matched by call name + argument position (see collectParamPrefixes), the
-// same mechanism as the gin and echo plugins. Known, deliberate residual
-// gaps (declined, not guessed):
+// the call site — which may live in a DIFFERENT package (see
+// collectParamPrefixes), the same mechanism as the gin and echo plugins: a
+// direct/qualified/concrete-method call binds precisely; an interface
+// dispatch matches by name+index. Known, deliberate residual gaps (declined,
+// not guessed):
 //
 //   - The fiber.Router callback form app.Route(prefix, func(r fiber.Router)
 //     {...}) is not followed (v1); Group covers the common case.
-//   - A register function whose only call site is in another package, a
-//     group variable assigned more than once, a non-constant Group/Add
+//   - A group variable assigned more than once, a non-constant Group/Add
 //     path or method, and a "*"/"+" wildcard path.
 package fiber
 
@@ -103,14 +103,14 @@ func isRouteMethodName(name string) bool {
 	return name == "All" || name == "Add"
 }
 
-func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
+func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]router.Route, error) {
 	if pkg.Fset == nil {
 		return nil, fmt.Errorf("fiber: package %s has no Fset", pkg.PkgPath)
 	}
 
 	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
 	groupDefs := collectGroupDefs(pkg)
-	paramPrefixes := collectParamPrefixes(pkg, groupDefs)
+	paramPrefixes := collectParamPrefixes(pkg, all)
 
 	var routes []router.Route
 	for _, file := range pkg.Syntax {
@@ -259,7 +259,11 @@ type registerParam struct {
 // both a direct call and an interface dispatch. Single-package; resolved to
 // a fixpoint. A *fiber.App parameter needs no entry here — it's always the
 // root, handled directly in groupPrefixes.
-func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]groupDef) map[types.Object][]string {
+func collectParamPrefixes(pkg *packages.Package, all []*packages.Package) map[types.Object][]string {
+	// The owner's group-parameter register functions: the set of their group
+	// params (for object binding) and a (name, arg index) index (for the
+	// interface-dispatch fallback).
+	ownerParams := map[types.Object]bool{}
 	byNameIdx := map[registerParam][]types.Object{}
 	for _, file := range pkg.Syntax {
 		for _, d := range file.Decls {
@@ -278,6 +282,7 @@ func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]grou
 				for _, nm := range names {
 					if isRouter {
 						if obj := pkg.TypesInfo.Defs[nm]; obj != nil {
+							ownerParams[obj] = true
 							key := registerParam{fn.Name.Name, idx}
 							byNameIdx[key] = append(byNameIdx[key], obj)
 						}
@@ -287,47 +292,94 @@ func collectParamPrefixes(pkg *packages.Package, groupDefs map[types.Object]grou
 			}
 		}
 	}
-	if len(byNameIdx) == 0 {
+	if len(ownerParams) == 0 {
 		return nil
 	}
 
+	// Precompute each scanned package's group definitions so a call-site
+	// argument is resolved in its own package's context.
+	gdByPkg := make(map[*packages.Package]map[types.Object]groupDef, len(all))
+	for _, p := range all {
+		gdByPkg[p] = collectGroupDefs(p)
+	}
+
 	prefixes := map[types.Object][]string{}
+	add := func(p *packages.Package, gd map[types.Object]groupDef, param types.Object, arg ast.Expr, changed *bool) {
+		if !ownerParams[param] {
+			return
+		}
+		argType := p.TypesInfo.TypeOf(arg)
+		if !isFiberNamedType(argType, "Router") && !isFiberNamedType(argType, "App") {
+			return
+		}
+		if aps, ok := groupPrefixes(p, arg, gd, prefixes, map[types.Object]bool{}); ok && addPrefixes(prefixes, param, aps) {
+			*changed = true
+		}
+	}
 	for changed := true; changed; {
 		changed = false
-		for _, file := range pkg.Syntax {
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				name, ok := calleeName(call.Fun)
-				if !ok {
-					return true
-				}
-				for i, arg := range call.Args {
-					objs, ok := byNameIdx[registerParam{name, i}]
+		for _, p := range all {
+			gd := gdByPkg[p]
+			for _, file := range p.Syntax {
+				ast.Inspect(file, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
 					if !ok {
-						continue
+						return true
 					}
-					argType := pkg.TypesInfo.TypeOf(arg)
-					if !isFiberNamedType(argType, "Router") && !isFiberNamedType(argType, "App") {
-						continue
+					if fn, ok := bindCallee(p, call); ok {
+						if sig, ok := fn.Type().(*types.Signature); ok && sig.Params() != nil {
+							for i := 0; i < sig.Params().Len() && i < len(call.Args); i++ {
+								add(p, gd, sig.Params().At(i), call.Args[i], &changed)
+							}
+						}
+						return true
 					}
-					argPrefixes, ok := groupPrefixes(pkg, arg, groupDefs, prefixes, map[types.Object]bool{})
+					name, ok := calleeName(call.Fun)
 					if !ok {
-						continue
+						return true
 					}
-					for _, obj := range objs {
-						if addPrefixes(prefixes, obj, argPrefixes) {
-							changed = true
+					for i, arg := range call.Args {
+						for _, obj := range byNameIdx[registerParam{name, i}] {
+							add(p, gd, obj, arg, &changed)
 						}
 					}
-				}
-				return true
-			})
+					return true
+				})
+			}
 		}
 	}
 	return prefixes
+}
+
+// bindCallee returns the single concrete function or method a call invokes,
+// or ok=false for an interface method call (dispatch, no one concrete
+// callee — the caller then falls back to name+index matching). It resolves a
+// bare function, a package-qualified function, and a concrete method value,
+// across packages.
+func bindCallee(callPkg *packages.Package, call *ast.CallExpr) (*types.Func, bool) {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		if fn, ok := callPkg.TypesInfo.Uses[fun].(*types.Func); ok {
+			return fn, true
+		}
+	case *ast.SelectorExpr:
+		if seln, ok := callPkg.TypesInfo.Selections[fun]; ok {
+			fn, ok := seln.Obj().(*types.Func)
+			if !ok {
+				return nil, false
+			}
+			if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+				if _, iface := sig.Recv().Type().Underlying().(*types.Interface); iface {
+					return nil, false
+				}
+			}
+			return fn, true
+		}
+		if fn, ok := callPkg.TypesInfo.Uses[fun.Sel].(*types.Func); ok {
+			return fn, true
+		}
+	}
+	return nil, false
 }
 
 // calleeName returns the bare name a call expression invokes.

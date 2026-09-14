@@ -31,6 +31,11 @@ type Route struct {
 type Plugin interface {
 	// Name identifies the plugin, e.g. "net/http".
 	Name() string
-	// Extract returns every route the plugin recognizes in pkg.
-	Extract(pkg *packages.Package) ([]Route, error)
+	// Extract returns every route the plugin recognizes in pkg. pkg is the
+	// owner: only route registrations written in pkg are emitted. all is
+	// every analyzed package, for cross-package lookups — resolving, for a
+	// route inside a register function in pkg, the path prefix of the group
+	// passed at a call site that lives in a different package. A plugin with
+	// no cross-package resolution ignores all.
+	Extract(pkg *packages.Package, all []*packages.Package) ([]Route, error)
 }

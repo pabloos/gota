@@ -139,7 +139,7 @@ var httpMethods = map[string]bool{
 	http.MethodDelete: true, http.MethodHead: true, http.MethodOptions: true, http.MethodTrace: true,
 }
 
-func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
+func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]router.Route, error) {
 	if pkg.Fset == nil {
 		return nil, fmt.Errorf("gorilla: package %s has no Fset", pkg.PkgPath)
 	}

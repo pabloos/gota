@@ -47,7 +47,7 @@ func TestExtract(t *testing.T) {
 		t.Fatalf("expected 1 package, got %d", len(pkgs))
 	}
 
-	routes, err := fiber.New().Extract(pkgs[0])
+	routes, err := fiber.New().Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -171,13 +171,16 @@ func TestExtract_CrossPackage(t *testing.T) {
 		t.Fatalf("fixture setup: no package named main among %+v", pkgs)
 	}
 
-	routes, err := fiber.New().Extract(mainPkg)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
+	_ = mainPkg
 	got := map[string]router.Route{}
-	for _, r := range routes {
-		got[r.Method+" "+r.Path] = r
+	for _, pkg := range pkgs {
+		routes, err := fiber.New().Extract(pkg, pkgs)
+		if err != nil {
+			t.Fatalf("Extract(%s): %v", pkg.Name, err)
+		}
+		for _, r := range routes {
+			got[r.Method+" "+r.Path] = r
+		}
 	}
 
 	for key, handler := range map[string]string{
@@ -191,11 +194,18 @@ func TestExtract_CrossPackage(t *testing.T) {
 		if r.HandlerName != handler {
 			t.Errorf("route %q: HandlerName = %q, want %q", key, r.HandlerName, handler)
 		}
-		if r.HandlerDecl != nil || r.File != nil {
-			t.Errorf("route %q: HandlerDecl/File should be nil (cross-package)", key)
-		}
 		if r.HandlerObj == nil {
 			t.Errorf("route %q: HandlerObj is nil, want the resolved cross-package object", key)
 		}
+	}
+
+	// A register function in the handlers package, called as
+	// handlers.RegisterAdmin(app.Group("/admin")) from main.
+	admin, ok := got["GET /admin/stats"]
+	if !ok {
+		t.Fatalf("routes = %+v, want GET /admin/stats (cross-package register function)", keys(got))
+	}
+	if admin.HandlerName != "AdminStats" {
+		t.Errorf("GET /admin/stats: HandlerName = %q, want AdminStats", admin.HandlerName)
 	}
 }

@@ -45,7 +45,7 @@ var registrationMethods = map[string]bool{
 	"Handle":     true,
 }
 
-func (p *Plugin) Extract(pkg *packages.Package) ([]router.Route, error) {
+func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]router.Route, error) {
 	if pkg.Fset == nil {
 		return nil, fmt.Errorf("nethttp: package %s has no Fset", pkg.PkgPath)
 	}

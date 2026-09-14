@@ -7,3 +7,11 @@ import "github.com/labstack/echo/v4"
 
 func GetUser(c echo.Context) error    { return nil }
 func CreateUser(c echo.Context) error { return nil }
+
+// RegisterAdmin registers routes on a group passed by the caller (in
+// another package); its "/stats" resolves under that group's prefix.
+func RegisterAdmin(g *echo.Group) {
+	g.GET("/stats", AdminStats)
+}
+
+func AdminStats(c echo.Context) error { return nil }

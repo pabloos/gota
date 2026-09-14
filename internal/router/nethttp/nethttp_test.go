@@ -45,7 +45,7 @@ func TestExtract(t *testing.T) {
 	}
 
 	plugin := nethttp.New()
-	routes, err := plugin.Extract(pkgs[0])
+	routes, err := plugin.Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestExtract(t *testing.T) {
 func TestExtract_NoMethodPatternMatchesAllMethods(t *testing.T) {
 	pkgs := loadFixture(t, "routes")
 
-	routes, err := nethttp.New().Extract(pkgs[0])
+	routes, err := nethttp.New().Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestName(t *testing.T) {
 func TestExtract_MethodValueHandler(t *testing.T) {
 	pkgs := loadFixture(t, "routes_method_value")
 
-	routes, err := nethttp.New().Extract(pkgs[0])
+	routes, err := nethttp.New().Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestExtract_CrossPackageHandler(t *testing.T) {
 		t.Fatalf("fixture setup: no package named main among: %+v", pkgs)
 	}
 
-	routes, err := nethttp.New().Extract(mainPkg)
+	routes, err := nethttp.New().Extract(mainPkg, pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestExtract_CrossPackageHandler(t *testing.T) {
 func TestExtract_MethodDispatchFuncLit(t *testing.T) {
 	pkgs := loadFixture(t, "routes_method_dispatch")
 
-	routes, err := nethttp.New().Extract(pkgs[0])
+	routes, err := nethttp.New().Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}

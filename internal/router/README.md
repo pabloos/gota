@@ -33,13 +33,12 @@ handler — `r.GET("/version", func(c *gin.Context){ c.JSON(200, v) })` —
 is supported too: its body is inferred like any other, and since it has
 no name, its operationId is synthesized from the method and path
 (`GetVersion`). A `func reg(rg *gin.RouterGroup){...}` register function is
-resolved to the prefix of the group passed at its call site — direct call
-and interface-dispatch registry loop alike, matched by call name + argument
-position (the same mechanism as Echo's, below) — with nested groups inside
-chaining onto it; only a register function called solely from another
-package stays declined (the single-package boundary chi's `Mount` has). A
-`*name` catch-all, a reassigned group variable, and a non-constant method
-are still declined.
+resolved to the prefix of the group passed at its call site — **including a
+call site in a different package** (the common handlers-package-registered-
+from-`main` split): a direct/qualified/concrete-method call binds precisely,
+an interface-dispatch registry loop matches by name+position, with nested
+groups inside chaining onto the prefix. A `*name` catch-all, a reassigned
+group variable, and a non-constant method are still declined.
 
 Echo works the same way, off `*echo.Echo` and `*echo.Group` — the one
 structural difference from Gin is that Echo's handler sits at a *fixed*
@@ -61,10 +60,12 @@ name + argument position — so it resolves both a direct call
 (`registerUsers(v1)`) and the interface-dispatch registry loop
 (`for _, h := range hs { h.Routes(g) }`) that frameworks like
 [pagoda](https://github.com/mikestefanello/pagoda) use, with nested groups
-inside the function chaining onto the resolved prefix. A register function
-whose only call site is in another package stays declined — the same
-single-package boundary as chi's `Mount`. (The Gin plugin resolves its
-`func(rg *gin.RouterGroup)` equivalent the same way.)
+inside the function chaining onto the resolved prefix. The call site may live
+in a different package than the register function — a direct/qualified/
+concrete-method call binds its arguments precisely across packages, while
+cross-package interface dispatch stays a name+position heuristic. (The Gin
+and Fiber plugins resolve their equivalents the same way; chi's `Mount`
+constructor is still same-package only.)
 
 Fiber is read off `*fiber.App` and the `fiber.Router` interface a group is
 typed as. Its route methods are named like Go methods (`app.Get`, `app.Post`,
@@ -74,7 +75,8 @@ middleware), as in Gin. Groups accumulate their prefix by object identity,
 inline and nested; `:name` (an optional `?` suffix dropped) → `{name}` and a
 `*`/`+` wildcard is declined. The register-function layout resolves exactly
 as Gin's and Echo's — a `func(r fiber.Router)` parameter takes the prefix of
-the group passed at the call site (a `*fiber.App` parameter is the root). Its
+the group passed at the call site, cross-package included (a `*fiber.App`
+parameter is the root). Its
 dialect is the one framework where the status isn't a response-call argument:
 `c.JSON(obj)` records at the ambient status, `c.Status(code)` sets it (read
 off the chain in `c.Status(201).JSON(obj)`), and `c.SendStatus(code)` is a
@@ -164,12 +166,13 @@ partial or incorrect guess.
 ## Known gaps
 
 No further framework plugins are planned right now. The remaining
-route-extraction gaps are shared across the framework plugins: a register
-function whose only call site is in another package (the single-package
-boundary chi's `Mount` also has), and Fiber's `app.Route(prefix, func(r
-fiber.Router){…})` callback form. A new framework plugin would also need its
-own `inference.Dialect` (see [schema & body inference](../inference/)), not
-just route extraction.
+route-extraction gaps: chi's `Mount` still resolves only a same-package
+constructor (cross-package `Mount` is not yet followed, unlike the framework
+register functions, which now are); cross-package interface-dispatch
+registration is matched by name+position rather than resolved object; and
+Fiber's `app.Route(prefix, func(r fiber.Router){…})` callback form isn't
+followed. A new framework plugin would also need its own `inference.Dialect`
+(see [schema & body inference](../inference/)), not just route extraction.
 
 ## Feature matrix
 
@@ -187,7 +190,7 @@ router's API:
 | Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | single-arg wrapper | single-arg wrapper | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
 | Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a | n/a | n/a |
 | Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
-| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | ✅ register function taking a `fiber.Router`/`*fiber.App` param, resolved to its call-site prefix (direct call and interface-dispatch registry loop), same-package | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
+| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (cross-package included; direct/method calls precisely, interface dispatch by name) | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (cross-package included) | ✅ register function taking a `fiber.Router`/`*fiber.App` param, resolved to its call-site prefix (cross-package included) | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
 `internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`,

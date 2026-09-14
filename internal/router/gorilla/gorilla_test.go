@@ -40,7 +40,7 @@ func TestExtract(t *testing.T) {
 		t.Fatalf("expected 1 package, got %d", len(pkgs))
 	}
 
-	routes, err := gorilla.New().Extract(pkgs[0])
+	routes, err := gorilla.New().Extract(pkgs[0], pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestExtract_CrossPackage(t *testing.T) {
 		t.Fatalf("fixture setup: no package named main among %+v", pkgs)
 	}
 
-	routes, err := gorilla.New().Extract(mainPkg)
+	routes, err := gorilla.New().Extract(mainPkg, pkgs)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}

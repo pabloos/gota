@@ -14,5 +14,6 @@ func main() {
 	app.Get("/users/:id", handlers.GetUser)
 	v1 := app.Group("/api/v1")
 	v1.Post("/users", handlers.CreateUser)
+	handlers.RegisterAdmin(app.Group("/admin"))
 	app.Listen(":8080")
 }

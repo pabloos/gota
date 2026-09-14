@@ -337,8 +337,8 @@ gota's internals are documented next to the code they describe:
 ## Contributing
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
-dev setup and a list of concrete, well-scoped starting points (a Fiber
-router plugin + dialect, cross-package `Mount` resolution).
+dev setup and a list of concrete, well-scoped starting points (another
+framework's router plugin + dialect, cross-package chi `Mount` resolution).
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

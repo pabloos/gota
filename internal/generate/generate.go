@@ -83,7 +83,7 @@ func Run(opts Options) (*model.Document, error) {
 	var pending []pendingOperation
 	for _, pkg := range pkgs {
 		for _, rt := range opts.Routers {
-			routes, err := rt.Plugin.Extract(pkg)
+			routes, err := rt.Plugin.Extract(pkg, pkgs)
 			if err != nil {
 				return nil, fmt.Errorf("generate: plugin %s: %w", rt.Plugin.Name(), err)
 			}
