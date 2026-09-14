@@ -6,6 +6,28 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.11.0]
+
+### Added
+
+- **Cross-package register-function resolution** for the gin, echo and fiber
+  plugins. A register function declared in one package but called — given
+  its group's prefix — from another (the common
+  handlers-package-registered-from-`main` split) now resolves its routes to
+  that prefix, where before it was declined. A call resolving to one
+  concrete function/method binds its arguments precisely across packages (a
+  direct call, a package-qualified call, or a concrete method value); an
+  interface-dispatch registry loop is matched by name + argument position.
+
+### Changed
+
+- The `router.Plugin` interface's `Extract` now takes the full set of
+  analyzed packages, `Extract(pkg, all []*packages.Package)`, so a plugin
+  can resolve a call site that lives in a different package than the route
+  it configures. Plugins with no cross-package resolution (net/http,
+  gorilla/mux) ignore `all`. (chi's `Mount` still resolves only a
+  same-package constructor.)
+
 ## [0.10.0]
 
 ### Added
