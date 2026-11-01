@@ -15,6 +15,6 @@ func main() {
 	r.Get("/users/{id}", handlers.GetUser)                  // qualified identifier
 	r.Post("/users", http.HandlerFunc(handlers.CreateUser)) // http.HandlerFunc conversion of one
 	r.Get("/items/{id}", handlers.Srv.GetItem)              // cross-package method value
-	r.Mount("/widgets", handlers.WidgetsRouter())           // cross-package Mount target (declined)
+	r.Mount("/widgets", handlers.WidgetsRouter())           // cross-package Mount target, followed -> /widgets/widgets
 	http.ListenAndServe(":8080", r)
 }

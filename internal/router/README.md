@@ -64,8 +64,9 @@ inside the function chaining onto the resolved prefix. The call site may live
 in a different package than the register function — a direct/qualified/
 concrete-method call binds its arguments precisely across packages, while
 cross-package interface dispatch stays a name+position heuristic. (The Gin
-and Fiber plugins resolve their equivalents the same way; chi's `Mount`
-constructor is still same-package only.)
+and Fiber plugins resolve their equivalents the same way; chi's `Mount` of a
+zero-argument constructor is also followed cross-package, by a distinct
+mechanism — see the chi paragraph below.)
 
 Fiber is read off `*fiber.App` and the `fiber.Router` interface a group is
 typed as. Its route methods are named like Go methods (`app.Get`, `app.Post`,
@@ -81,7 +82,9 @@ dialect is the one framework where the status isn't a response-call argument:
 `c.JSON(obj)` records at the ambient status, `c.Status(code)` sets it (read
 off the chain in `c.Status(201).JSON(obj)`), and `c.SendStatus(code)` is a
 bodyless response. The `app.Route(prefix, func(r fiber.Router){…})` callback
-form is not followed yet.
+form is followed: the closure's router parameter takes the Route prefix (joined
+onto any enclosing group), so the routes registered on it inside surface
+under that prefix.
 
 gorilla/mux routes are read off `r.HandleFunc(path, h)` / `r.Handle(path,
 h)`, with the HTTP methods taken from a `.Methods("GET", …)` chained onto
@@ -116,12 +119,13 @@ declined.
 Chi's `Route`/`Group` nesting is followed to arbitrary depth,
 accumulating the real path prefix (`r.Route("/users", func(r
 chi.Router) { r.Get("/{id}", H) })` → `/users/{id}`). `Mount` is
-followed for the common same-package, zero-argument constructor
-function idiom (`func productsRouter() chi.Router {...}` /
-`mx.Mount("/products", productsRouter())`) — a constructor declared in
-a *different* package can't be resolved (route extraction only ever
-sees one package at a time), and is left undetected rather than
-guessed. A chi-specific regex-constrained param (`{id:[0-9]+}`)
+followed for the zero-argument constructor function idiom
+(`func productsRouter() chi.Router {...}` /
+`mx.Mount("/products", productsRouter())`) — including a constructor
+declared in a *different* package (`mx.Mount("/products",
+productsapi.Router())`), resolved from the all-packages view and
+excluded from being walked standalone in its own package so it surfaces
+exactly once, under the mount prefix. A chi-specific regex-constrained param (`{id:[0-9]+}`)
 degrades to a bare `{id}` (no direct OpenAPI equivalent); a bare
 wildcard segment (`/admin/*`) has no OpenAPI path-template equivalent
 at all and that registration is declined entirely.
@@ -166,12 +170,14 @@ partial or incorrect guess.
 ## Known gaps
 
 No further framework plugins are planned right now. The remaining
-route-extraction gaps: chi's `Mount` still resolves only a same-package
-constructor (cross-package `Mount` is not yet followed, unlike the framework
-register functions, which now are); cross-package interface-dispatch
-registration is matched by name+position rather than resolved object; and
-Fiber's `app.Route(prefix, func(r fiber.Router){…})` callback form isn't
-followed. A new framework plugin would also need its own `inference.Dialect`
+route-extraction gaps: chi's `Mount` resolves a zero-argument constructor
+function (same- or cross-package), but not a router-parameter register
+function mounted at a prefix in a different package — chi walks such a
+function at the top-level prefix, assuming absolute paths, rather than
+reading the prefix off its call site the way the framework register
+functions do; and cross-package interface-dispatch registration is matched
+by name+position rather than resolved object. A new framework plugin would
+also need its own `inference.Dialect`
 (see [schema & body inference](../inference/)), not just route extraction.
 
 ## Feature matrix
@@ -190,7 +196,7 @@ router's API:
 | Handler resolution: through middleware wrapping | single-arg wrapper | single-arg wrapper | n/a | single-arg wrapper | single-arg wrapper | ✅ type-aware: single-arg, multi-arg (`LoggingHandler(out, H)`), curried (`cors(opts)(H)`) |
 | Handler resolution: anonymous `switch`/`if-else` on `r.Method` | ✅ | n/a (chi has `Method`/`MethodFunc` instead) | n/a | n/a | n/a | n/a |
 | Nested path-prefix routing                     | n/a | ✅ `Route`/`Group`, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `Group` variables, by object identity, arbitrary depth | ✅ `PathPrefix(…).Subrouter()` variables, by object identity, arbitrary depth |
-| Sub-router in a separate function              | n/a | `Mount`, same-package zero-arg constructor only | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (cross-package included; direct/method calls precisely, interface dispatch by name) | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (cross-package included) | ✅ register function taking a `fiber.Router`/`*fiber.App` param, resolved to its call-site prefix (cross-package included) | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
+| Sub-router in a separate function              | n/a | `Mount` of a zero-arg constructor, same- or cross-package (excluded from standalone walk so it surfaces once) | ✅ register function taking a `*gin.RouterGroup` param, resolved to its call-site prefix (cross-package included; direct/method calls precisely, interface dispatch by name) | ✅ register function taking an `*echo.Group` param, resolved to its call-site prefix (cross-package included) | ✅ register function taking a `fiber.Router`/`*fiber.App` param, resolved to its call-site prefix (cross-package included) | `Handle`/`PathPrefix().Handler(http.StripPrefix())` mount of a same-package zero-arg `*mux.Router` constructor, prefix applied |
 
 Tests: `internal/router/nethttp/nethttp_test.go`,
 `internal/router/chi/chi_test.go`, `internal/router/gin/gin_test.go`,

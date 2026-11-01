@@ -335,30 +335,26 @@ func TestExtract(t *testing.T) {
 func TestExtract_CrossPackage(t *testing.T) {
 	pkgs := loadFixture(t, "routes_cross_package")
 
-	var mainPkg *packages.Package
-	for _, pkg := range pkgs {
-		if pkg.Name == "main" {
-			mainPkg = pkg
-		}
-	}
-	if mainPkg == nil {
-		t.Fatalf("fixture setup: no package named main among: %+v", pkgs)
-	}
-
-	routes, err := chi.New().Extract(mainPkg, pkgs)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-
+	// Extract every package the way generate does, so the cross-package
+	// Mount constructor (walked from main) and the no-double-emit guard
+	// (the constructor's own package must not emit it standalone) are both
+	// exercised.
 	got := map[string]router.Route{}
-	for _, r := range routes {
-		got[r.Method+" "+r.Path] = r
+	for _, pkg := range pkgs {
+		routes, err := chi.New().Extract(pkg, pkgs)
+		if err != nil {
+			t.Fatalf("Extract(%s): %v", pkg.Name, err)
+		}
+		for _, r := range routes {
+			got[r.Method+" "+r.Path] = r
+		}
 	}
 
 	wantHandler := map[string]string{
-		"GET /users/{id}": "GetUser",
-		"POST /users":     "CreateUser",
-		"GET /items/{id}": "GetItem",
+		"GET /users/{id}":      "GetUser",
+		"POST /users":          "CreateUser",
+		"GET /items/{id}":      "GetItem",
+		"GET /widgets/widgets": "ListWidgets", // cross-package Mount constructor, resolved
 	}
 	if len(got) != len(wantHandler) {
 		t.Fatalf("got %d routes, want %d: %+v", len(got), len(wantHandler), got)
@@ -372,15 +368,17 @@ func TestExtract_CrossPackage(t *testing.T) {
 			t.Errorf("route %q: HandlerName = %q, want %q", key, r.HandlerName, handler)
 		}
 		if r.HandlerDecl != nil || r.File != nil {
-			t.Errorf("route %q: HandlerDecl/File should be nil (Extract only sees the main package)", key)
+			t.Errorf("route %q: HandlerDecl/File should be nil (registered cross-package, backfilled by generate)", key)
 		}
 		if r.HandlerObj == nil {
 			t.Errorf("route %q: HandlerObj is nil, want the resolved cross-package object", key)
 		}
 	}
 
-	if _, ok := got["GET /widgets/widgets"]; ok {
-		t.Errorf("routes = %+v, a cross-package Mount constructor must not be followed", got)
+	// The constructor's route must surface only under its mount prefix, not
+	// standalone at a bare "/widgets" from the handlers package's own pass.
+	if _, ok := got["GET /widgets"]; ok {
+		t.Errorf("routes = %+v, a mounted constructor must not also emit its routes standalone", got)
 	}
 }
 

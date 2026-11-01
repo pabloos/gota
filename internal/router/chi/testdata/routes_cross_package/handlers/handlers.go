@@ -21,9 +21,10 @@ func (s *Server) GetItem(w http.ResponseWriter, r *http.Request) {}
 var Srv = &Server{}
 
 // WidgetsRouter is a sub-router constructor declared in this package,
-// mounted from main -- a cross-package Mount target, which the plugin
-// deliberately can't follow (Extract only ever sees one package), so
-// its own registration must not surface at all.
+// mounted from main -- a cross-package Mount target. The plugin follows it
+// from the mount site (emitting its "/widgets" under the "/widgets" mount
+// prefix) and excludes it from this package's own standalone pass, so it
+// surfaces exactly once, prefixed.
 func WidgetsRouter() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/widgets", ListWidgets)

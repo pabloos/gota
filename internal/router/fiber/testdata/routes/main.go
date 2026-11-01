@@ -32,6 +32,11 @@ func Register() *fiber.App {
 	// Inline chained group.
 	app.Group("/inline").Get("/thing", InlineThing)
 
+	// The callback routing form: the closure's router resolves under "/v2".
+	app.Route("/v2", func(r fiber.Router) {
+		r.Get("/items", ItemsHandler)
+	})
+
 	// A register function taking a fiber.Router: "/tags" resolves under "/rel".
 	registerRelative(app.Group("/rel"))
 
@@ -88,6 +93,7 @@ func StaticHandler(c *fiber.Ctx) error     { return nil }
 func ListProducts(c *fiber.Ctx) error      { return nil }
 func AdminStats(c *fiber.Ctx) error        { return nil }
 func InlineThing(c *fiber.Ctx) error       { return nil }
+func ItemsHandler(c *fiber.Ctx) error      { return nil }
 func TagsHandler(c *fiber.Ctx) error       { return nil }
 func RootHandler(c *fiber.Ctx) error       { return nil }
 func WidgetsHandler(c *fiber.Ctx) error    { return nil }

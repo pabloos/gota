@@ -119,6 +119,12 @@ func TestExtract(t *testing.T) {
 		}
 	})
 
+	t.Run("the Route callback form resolves the closure under its prefix", func(t *testing.T) {
+		if _, ok := got["GET /v2/items"]; !ok {
+			t.Errorf("routes = %+v, want GET /v2/items from app.Route(\"/v2\", func(r){...})", keys(got))
+		}
+	})
+
 	t.Run("a register function resolves to its call-site prefix", func(t *testing.T) {
 		if _, ok := got["GET /rel/tags"]; !ok {
 			t.Errorf("routes = %+v, want GET /rel/tags (register func resolved via call site)", keys(got))

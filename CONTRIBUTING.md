@@ -140,17 +140,17 @@ These are real, currently-unaddressed gaps — each documented in the
   and `dialect_gin.go` / `dialect_echo.go` / `dialect_fiber.go` for how a
   real framework dialect embeds it and adds `c.JSON`/`c.Bind`-style
   recognizers.
-- **Cross-package chi `Mount` resolution.** `Plugin.Extract` now receives
-  all analyzed packages (`Extract(pkg, all)`), and the gin/echo/fiber
-  register-function resolution already uses that to resolve a call site in
-  another package (see each plugin's `collectParamPrefixes`). chi's `Mount`
-  still follows only a *same-package* constructor: a `Mount(prefix,
-  otherpkg.Router())` where the constructor lives elsewhere (the common way
-  large real Chi APIs are structured) isn't resolved yet, and its routes
-  would need both the mount prefix from the `Mount` site and exclusion of
-  the constructor's standalone (bare-path) emission when its own package is
-  analyzed. The register-function plugins are the reference for using
-  `all`.
+- **Call-site prefix for a chi register function.** chi now follows a
+  `Mount` of a zero-argument constructor function across packages, and the
+  gin/echo/fiber plugins resolve a *register function* (a func taking a
+  router parameter) to the prefix of the group passed at its call site,
+  cross-package included (see each plugin's `collectParamPrefixes`). chi
+  does not yet do the latter: a `func registerThings(r chi.Router) { ... }`
+  called as `registerThings(mx.Route("/things", ...))` — or mounted at a
+  prefix in another package — is walked at the top-level prefix, assuming
+  its paths are absolute, rather than taking the prefix off the call site.
+  Reading that prefix off the call site (the register-function plugins are
+  the reference) would close the last cross-package route-extraction gap.
 
 Opening an issue to discuss approach before a large PR is welcome but not
 required for small, well-contained changes.

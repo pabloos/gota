@@ -29,13 +29,14 @@
 // the call site — which may live in a DIFFERENT package (see
 // collectParamPrefixes), the same mechanism as the gin and echo plugins: a
 // direct/qualified/concrete-method call binds precisely; an interface
-// dispatch matches by name+index. Known, deliberate residual gaps (declined,
-// not guessed):
+// dispatch matches by name+index. The callback routing form
+// "X.Route(prefix, func(r fiber.Router) { r.Get(...) })" is followed too
+// (see collectRouteClosures): the closure's router parameter takes X's
+// prefix joined with Route's constant prefix.
 //
-//   - The fiber.Router callback form app.Route(prefix, func(r fiber.Router)
-//     {...}) is not followed (v1); Group covers the common case.
-//   - A group variable assigned more than once, a non-constant Group/Add
-//     path or method, and a "*"/"+" wildcard path.
+// Known, deliberate residual gaps (declined, not guessed): a group variable
+// assigned more than once, a non-constant Group/Add/Route path or method,
+// and a "*"/"+" wildcard path.
 package fiber
 
 import (
@@ -111,6 +112,7 @@ func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]rout
 	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
 	groupDefs := collectGroupDefs(pkg)
 	paramPrefixes := collectParamPrefixes(pkg, all)
+	paramPrefixes = collectRouteClosures(pkg, groupDefs, paramPrefixes)
 
 	var routes []router.Route
 	for _, file := range pkg.Syntax {
@@ -380,6 +382,69 @@ func bindCallee(callPkg *packages.Package, call *ast.CallExpr) (*types.Func, boo
 		}
 	}
 	return nil, false
+}
+
+// collectRouteClosures handles Fiber's callback routing form
+// "X.Route(prefix, func(r fiber.Router) { r.Get(...) })": it binds the
+// closure's fiber.Router parameter to the prefix of the receiver X joined
+// with the Route's constant prefix, so the r.Get/... calls inside — walked
+// by the main pass like any other route-method call — resolve under it. The
+// closure is always inline (same package), but its receiver X may be a group
+// variable or a register-function parameter, so it's resolved to a fixpoint
+// alongside the prefixes already collected. Returns prefixes, allocating it
+// if a closure is found and it was nil.
+func collectRouteClosures(pkg *packages.Package, groupDefs map[types.Object]groupDef, prefixes map[types.Object][]string) map[types.Object][]string {
+	type closure struct {
+		recv   ast.Expr
+		prefix string
+		param  types.Object
+	}
+	var closures []closure
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Route" || len(call.Args) < 2 || !isFiberRouterMethodCall(pkg, sel) {
+				return true
+			}
+			prefix, ok := stringLiteral(call.Args[0])
+			if !ok {
+				return true
+			}
+			lit, ok := call.Args[1].(*ast.FuncLit)
+			if !ok || lit.Type.Params == nil || len(lit.Type.Params.List) == 0 {
+				return true
+			}
+			field := lit.Type.Params.List[0]
+			if len(field.Names) == 0 || !isFiberNamedType(pkg.TypesInfo.TypeOf(field.Type), "Router") {
+				return true
+			}
+			if obj := pkg.TypesInfo.Defs[field.Names[0]]; obj != nil {
+				closures = append(closures, closure{recv: sel.X, prefix: prefix, param: obj})
+			}
+			return true
+		})
+	}
+	if len(closures) == 0 {
+		return prefixes
+	}
+	if prefixes == nil {
+		prefixes = map[types.Object][]string{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, c := range closures {
+			if aps, ok := groupPrefixes(pkg, c.recv, groupDefs, prefixes, map[types.Object]bool{}); ok {
+				if addPrefixes(prefixes, c.param, joinAll(aps, c.prefix)) {
+					changed = true
+				}
+			}
+		}
+	}
+	return prefixes
 }
 
 // calleeName returns the bare name a call expression invokes.

@@ -338,7 +338,8 @@ gota's internals are documented next to the code they describe:
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
 dev setup and a list of concrete, well-scoped starting points (another
-framework's router plugin + dialect, cross-package chi `Mount` resolution).
+framework's router plugin + dialect, call-site prefix resolution for a chi
+register function).
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

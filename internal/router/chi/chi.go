@@ -50,21 +50,24 @@
 // multi-argument call the prefix can't be wired through is declined
 // entirely rather than emitted at a silently-wrong empty prefix.
 //
-// Known, deliberate v1 gaps (declined, not guessed) — found running
-// this plugin against real, public Chi projects on GitHub, not
-// speculated:
-//   - A router-parameter register function that uses RELATIVE paths and
-//     is mounted at a prefix in a DIFFERENT package — the mount site is
-//     invisible to a single-package Plugin.Extract call, so its routes
-//     surface at the empty prefix (unprefixed) rather than the real one.
-//     The same-package version of this is detected and declined (above);
-//     this cross-package sliver is the exact boundary a future
-//     all-packages pass would move.
-//   - Mount beyond a same-package, zero-argument constructor function or
-//     a same-block tracked variable — a cross-package constructor, or a
-//     variable that escapes the block it was declared in, falls outside
-//     what a single Plugin.Extract call over one package/block can
-//     resolve.
+// A Mount of a zero-argument, chi.Router-returning constructor FUNCTION is
+// followed even when the constructor is declared in a DIFFERENT package
+// (mx.Mount("/products", productsapi.Router())): its routes surface under
+// the mount prefix, and it is excluded from being walked standalone in its
+// own package, so it appears exactly once. See mountedRoutes / crossPkg.
+//
+// Known, deliberate gaps (declined, not guessed) — found running this
+// plugin against real, public Chi projects on GitHub, not speculated:
+//   - A router-parameter register function that uses RELATIVE paths and is
+//     mounted at a prefix in a DIFFERENT package: unlike a Mount
+//     constructor, a register function's prefix would have to be read off
+//     its call site, which this plugin doesn't do (it walks such a function
+//     at the empty top-level prefix, assuming absolute paths). The
+//     framework plugins (gin/echo/fiber) do resolve their register
+//     functions cross-package; chi's register-function shape doesn't yet.
+//   - Mount of anything but a zero-argument constructor FUNCTION — a
+//     constructor built across multiple statements, returned from a METHOD
+//     call, or a variable that escapes the block it was declared in.
 //   - A chi.Router reached through struct embedding rather than chi's
 //     own named types directly.
 //   - A Route/Group callback not written as an inline closure argument
@@ -157,10 +160,20 @@ func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]rout
 		return nil, fmt.Errorf("chi: package %s has no Fset", pkg.PkgPath)
 	}
 
+	// funcDecls stays package-local: a cross-package handler is then left
+	// HandlerObj-only so internal/generate backfills it with its own
+	// package's type info. The constructor index (xp.ctors) is global, used
+	// only to find a cross-package Mount target's body.
 	funcDecls := astutil.IndexFuncDecls([]*packages.Package{pkg})
+	byPath := make(map[string]*packages.Package, len(all))
+	for _, p := range all {
+		byPath[p.PkgPath] = p
+	}
+	xp := crossPkg{ctors: astutil.IndexFuncDecls(all), byPath: byPath}
 
-	// mounted collects every function object used anywhere in pkg as a
-	// Mount target (see resolveMountTarget) BEFORE the main walk below,
+	// mounted collects every function object used anywhere in ANY analyzed
+	// package as a Mount target (see resolveMountTarget) BEFORE the main
+	// walk below,
 	// so a mount-constructor function like "func productsRouter()
 	// chi.Router" is walked exactly once — via mountedRoutes' own
 	// recursion, with the real accumulated prefix — rather than ALSO
@@ -169,7 +182,7 @@ func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]rout
 	// the empty top-level prefix. This was caught by manually running
 	// the plugin end-to-end, not by a unit test — see the fixture and
 	// test asserting no spurious "/" routes.
-	mounted := mountedFuncs(pkg)
+	mounted := globalMountedFuncs(all)
 
 	// excluded/declined classify same-package functions the top-level
 	// walk below would otherwise mis-handle -- see routerParamSets.
@@ -203,7 +216,7 @@ func (p *Plugin) Extract(pkg *packages.Package, all []*packages.Package) ([]rout
 			// excluded/declined. The one residual (mounted at a prefix
 			// cross-package with relative paths) is documented in this
 			// package's doc comment.
-			routes = append(routes, extractFromBlock(pkg, fd.Body.List, "", funcDecls)...)
+			routes = append(routes, extractFromBlock(pkg, fd.Body.List, "", funcDecls, xp)...)
 		}
 	}
 	return routes, nil
@@ -370,6 +383,32 @@ func mountedFuncs(pkg *packages.Package) map[types.Object]bool {
 	return mounted
 }
 
+// globalMountedFuncs unions mountedFuncs over every analyzed package, so a
+// constructor mounted in one package is excluded from being walked as a
+// standalone top-level entry point when ITS OWN package is analyzed — the
+// cross-package equivalent of mountedFuncs' same-package double-emit guard.
+func globalMountedFuncs(all []*packages.Package) map[types.Object]bool {
+	mounted := map[types.Object]bool{}
+	for _, p := range all {
+		for obj := range mountedFuncs(p) {
+			mounted[obj] = true
+		}
+	}
+	return mounted
+}
+
+// crossPkg carries what the walk needs to follow a Mount into a constructor
+// declared in a different package: a global index of every function
+// declaration (to find the constructor's body, which the package-local
+// funcDecls used for handler resolution deliberately omits, so a
+// cross-package handler keeps HandlerObj-only and internal/generate
+// backfills it with the right package's type info) and a path→package map
+// (to walk that body in its own package's type context).
+type crossPkg struct {
+	ctors  map[types.Object]astutil.FuncDeclInfo
+	byPath map[string]*packages.Package
+}
+
 // mountCallCallee resolves arg (Mount's second argument) to the
 // go/types object of a bare-identifier function call it makes,
 // regardless of argument count — used only by mountedFuncs, for the
@@ -412,12 +451,12 @@ func mountCallCallee(pkg *packages.Package, arg ast.Expr) types.Object {
 // can independently re-discover the same nested calls at the wrong,
 // unprefixed level) and a fresh extractFromBlock call walks the
 // closure's own body with the updated prefix.
-func extractFromBlock(pkg *packages.Package, stmts []ast.Stmt, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
+func extractFromBlock(pkg *packages.Package, stmts []ast.Stmt, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo, xp crossPkg) []router.Route {
 	// extractRouterVarBlocks is purely additive — see its own doc
 	// comment for why it can't double-count against the generic walk
 	// below.
 	var routes []router.Route
-	routes = append(routes, extractRouterVarBlocks(pkg, stmts, prefix, funcDecls)...)
+	routes = append(routes, extractRouterVarBlocks(pkg, stmts, prefix, funcDecls, xp)...)
 	for _, stmt := range stmts {
 		ast.Inspect(stmt, func(n ast.Node) bool {
 			switch node := n.(type) {
@@ -442,20 +481,20 @@ func extractFromBlock(pkg *packages.Package, stmts []ast.Stmt, prefix string, fu
 				switch sel.Sel.Name {
 				case "Route":
 					if pattern, lit, ok := patternAndFuncLit(node.Args); ok {
-						routes = append(routes, extractFromBlock(pkg, lit.Body.List, joinPath(prefix, pattern), funcDecls)...)
+						routes = append(routes, extractFromBlock(pkg, lit.Body.List, joinPath(prefix, pattern), funcDecls, xp)...)
 					}
 					return false
 				case "Group":
 					if len(node.Args) == 1 {
 						if lit, ok := node.Args[0].(*ast.FuncLit); ok && lit.Body != nil {
-							routes = append(routes, extractFromBlock(pkg, lit.Body.List, prefix, funcDecls)...)
+							routes = append(routes, extractFromBlock(pkg, lit.Body.List, prefix, funcDecls, xp)...)
 						}
 					}
 					return false
 				case "Mount":
 					if len(node.Args) == 2 {
 						if pattern, ok := stringLiteral(node.Args[0]); ok {
-							if sub, ok := mountedRoutes(pkg, node.Args[1], joinPath(prefix, pattern), funcDecls); ok {
+							if sub, ok := mountedRoutes(pkg, node.Args[1], joinPath(prefix, pattern), funcDecls, xp); ok {
 								routes = append(routes, sub...)
 							}
 						}
@@ -513,7 +552,7 @@ func extractFromBlock(pkg *packages.Package, stmts []ast.Stmt, prefix string, fu
 // configuring function): the generic walk already extracts that shape
 // today (v1's own static type makes isChiRouterReceiver match it
 // directly), so handling it again here would double-count it.
-func extractRouterVarBlocks(pkg *packages.Package, stmts []ast.Stmt, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo) []router.Route {
+func extractRouterVarBlocks(pkg *packages.Package, stmts []ast.Stmt, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo, xp crossPkg) []router.Route {
 	localVars := map[types.Object]bool{}
 	for _, stmt := range stmts {
 		assign, ok := stmt.(*ast.AssignStmt)
@@ -597,7 +636,7 @@ func extractRouterVarBlocks(pkg *packages.Package, stmts []ast.Stmt, prefix stri
 			if !mounted {
 				effectivePrefix = prefix
 			}
-			routes = append(routes, extractFromBlock(pkg, fd.Decl.Body.List, effectivePrefix, funcDecls)...)
+			routes = append(routes, extractFromBlock(pkg, fd.Decl.Body.List, effectivePrefix, funcDecls, xp)...)
 			return false
 		})
 	}
@@ -624,29 +663,33 @@ func patternAndFuncLit(args []ast.Expr) (pattern string, lit *ast.FuncLit, ok bo
 	return pattern, lit, true
 }
 
-// mountedRoutes recognizes arg as a call to a zero-argument function
-// declared in pkg -- the SAME package as the Mount call, since
-// Plugin.Extract only ever sees one package at a time, so a
-// constructor declared elsewhere can't be resolved here -- that
-// returns a chi.Router/*chi.Mux, and recurses into its body with
-// prefix already joined in. This is the common "func productsRouter()
-// chi.Router { r := chi.NewRouter(); r.Get(...); return r }" /
-// "mx.Mount(\"/products\", productsRouter())" idiom. Everything else
-// (a router built across multiple statements, passed in as a
-// parameter, constructed in a different package, returned from a
-// method call) declines this one Mount call entirely -- the same
-// all-or-nothing posture nethttp.dispatchRoutes uses for method-switch
-// closures.
-func mountedRoutes(pkg *packages.Package, arg ast.Expr, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo) ([]router.Route, bool) {
+// mountedRoutes recognizes arg as a call to a zero-argument,
+// chi.Router/*chi.Mux-returning function — "func productsRouter()
+// chi.Router { r := chi.NewRouter(); r.Get(...); return r }", mounted as
+// "mx.Mount(\"/products\", productsRouter())" — and recurses into its body
+// with prefix already joined in. The constructor may be declared in a
+// DIFFERENT package (mx.Mount("/products", productsapi.Router())): it's
+// found in the global index (xp.ctors) and walked in its own package's type
+// context (xp.byPath), so its chi.NewRouter()/r.Get(...) resolve against the
+// right TypesInfo. Everything else (a router built across multiple
+// statements, passed in as a parameter, returned from a method call)
+// declines this one Mount call entirely.
+func mountedRoutes(pkg *packages.Package, arg ast.Expr, prefix string, funcDecls map[types.Object]astutil.FuncDeclInfo, xp crossPkg) ([]router.Route, bool) {
 	obj := resolveMountTarget(pkg, arg)
 	if obj == nil {
 		return nil, false
 	}
-	fd, ok := funcDecls[obj]
+	fd, ok := xp.ctors[obj]
 	if !ok || fd.Decl == nil || fd.Decl.Body == nil {
 		return nil, false
 	}
-	return extractFromBlock(pkg, fd.Decl.Body.List, prefix, funcDecls), true
+	ctorPkg := pkg
+	if obj.Pkg() != nil {
+		if p, ok := xp.byPath[obj.Pkg().Path()]; ok {
+			ctorPkg = p
+		}
+	}
+	return extractFromBlock(ctorPkg, fd.Decl.Body.List, prefix, funcDecls, xp), true
 }
 
 // resolveMountTarget resolves arg (Mount's second argument) to the
@@ -661,16 +704,18 @@ func resolveMountTarget(pkg *packages.Package, arg ast.Expr) types.Object {
 	if !ok || len(call.Args) != 0 {
 		return nil
 	}
-	ident, ok := call.Fun.(*ast.Ident)
-	if !ok {
-		return nil
+	var obj types.Object
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		obj = pkg.TypesInfo.Uses[fn] // same-package free function
+	case *ast.SelectorExpr:
+		obj = pkg.TypesInfo.Uses[fn.Sel] // package-qualified free function: otherpkg.Router()
 	}
-	obj := pkg.TypesInfo.Uses[ident]
 	if obj == nil {
 		return nil
 	}
 	sig, ok := obj.Type().(*types.Signature)
-	if !ok || sig.Results() == nil || sig.Results().Len() != 1 || !isChiRouterType(sig.Results().At(0).Type()) {
+	if !ok || sig.Recv() != nil || sig.Results() == nil || sig.Results().Len() != 1 || !isChiRouterType(sig.Results().At(0).Type()) {
 		return nil
 	}
 	return obj
