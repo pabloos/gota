@@ -6,6 +6,25 @@ project versions itself with [SemVer](https://semver.org/), starting
 from `0.1.0` while the tool is still pre-1.0 and its inference surface
 is still growing.
 
+## [0.12.0]
+
+### Added
+
+- **Cross-package `Mount` resolution for the chi plugin.** A
+  `mx.Mount("/products", productsapi.Router())` whose zero-argument,
+  `chi.Router`-returning constructor is declared in a *different* package is
+  now followed: its routes surface under the mount prefix, and the
+  constructor is excluded from being walked standalone in its own package,
+  so it appears exactly once. Previously only a same-package constructor was
+  resolved. Cross-package handlers reached this way keep resolving to the
+  declaring package's types, so their request/response bodies are inferred
+  correctly.
+- **The Fiber `app.Route(prefix, func(r fiber.Router){…})` callback form**
+  is now followed. The closure's router parameter takes the Route prefix
+  (joined onto any enclosing group's prefix), so routes registered on it
+  inside the callback surface under that prefix, where before the whole
+  callback was declined.
+
 ## [0.11.0]
 
 ### Added
